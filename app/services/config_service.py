@@ -1,0 +1,353 @@
+"""
+配置服务实现
+管理应用程序配置
+"""
+
+import os
+import json
+import random
+from typing import Dict, Any, Optional, List
+from pathlib import Path
+from dotenv import load_dotenv
+import logging
+
+from app.services.interfaces import IConfigService
+
+logger = logging.getLogger(__name__)
+
+
+class ConfigService(IConfigService):
+    """
+    配置服务实现类
+    从环境变量和配置文件加载配置
+    """
+    
+    # 默认配置值
+    DEFAULTS = {
+        # GitHub配置
+        "GITHUB_TOKENS": "",
+        "GITHUB_API_URL": "https://api.github.com/search/code",
+        
+        # 数据路径配置
+        "DATA_PATH": "/app/data",
+        "QUERIES_FILE": "queries.txt",
+        "SCANNED_SHAS_FILE": "scanned_shas.txt",
+        
+        # 文件前缀配置
+        "VALID_KEY_PREFIX": "keys/keys_valid_",
+        "RATE_LIMITED_KEY_PREFIX": "keys/key_429_",
+        "KEYS_SEND_PREFIX": "keys/keys_send_",
+        "VALID_KEY_DETAIL_PREFIX": "logs/keys_valid_detail_",
+        "RATE_LIMITED_KEY_DETAIL_PREFIX": "logs/key_429_detail_",
+        "KEYS_SEND_DETAIL_PREFIX": "logs/keys_send_detail_",
+        
+        # 扫描配置
+        "DATE_RANGE_DAYS": "730",
+        "FILE_PATH_BLACKLIST": "readme,docs,doc/,.md,example,sample,tutorial,test,spec,demo,mock",
+        
+        # Gemini配置
+        "HAJIMI_CHECK_MODEL": "gemini-2.0-flash-exp",
+        
+        # 代理配置
+        "PROXY": "",
+        
+        # Gemini Balancer配置
+        "GEMINI_BALANCER_SYNC_ENABLED": "false",
+        "GEMINI_BALANCER_URL": "",
+        "GEMINI_BALANCER_AUTH": "",
+        
+        # GPT Load配置
+        "GPT_LOAD_SYNC_ENABLED": "false",
+        "GPT_LOAD_URL": "",
+        "GPT_LOAD_AUTH": "",
+        "GPT_LOAD_GROUP_NAME": "",
+        
+        # 性能配置
+        "MAX_CONCURRENT_SEARCHES": "5",
+        "MAX_CONCURRENT_VALIDATIONS": "10",
+        "BATCH_SIZE": "20",
+        "CHECKPOINT_INTERVAL": "20",
+        "LOOP_DELAY": "10",
+    }
+    
+    def __init__(self, env_file: Optional[str] = None, override: bool = False):
+        """
+        初始化配置服务
+        
+        Args:
+            env_file: .env文件路径（可选）
+            override: 是否覆盖已存在的环境变量
+        """
+        self._config: Dict[str, Any] = {}
+        self._env_file = env_file or ".env"
+        self._override = override
+        
+        # 加载配置
+        self.reload()
+        
+    def reload(self) -> None:
+        """重新加载配置"""
+        # 1. 加载默认配置
+        self._config = self.DEFAULTS.copy()
+        
+        # 2. 从.env文件加载配置
+        if os.path.exists(self._env_file):
+            load_dotenv(self._env_file, override=self._override)
+            logger.info(f"Loaded configuration from {self._env_file}")
+        
+        # 3. 从环境变量更新配置
+        for key in self.DEFAULTS:
+            env_value = os.getenv(key)
+            if env_value is not None:
+                self._config[key] = env_value
+        
+        # 4. 处理特殊配置
+        self._process_special_configs()
+        
+        logger.info(f"Configuration loaded with {len(self._config)} settings")
+    
+    def _process_special_configs(self) -> None:
+        """处理需要特殊转换的配置"""
+        # 处理GitHub tokens列表
+        tokens_str = self._config.get("GITHUB_TOKENS", "")
+        if tokens_str:
+            self._config["GITHUB_TOKENS_LIST"] = [
+                token.strip() for token in tokens_str.split(',') if token.strip()
+            ]
+        else:
+            self._config["GITHUB_TOKENS_LIST"] = []
+        
+        # 处理代理列表
+        proxy_str = self._config.get("PROXY", "")
+        if proxy_str:
+            self._config["PROXY_LIST"] = [
+                proxy.strip() for proxy in proxy_str.split(',') if proxy.strip()
+            ]
+        else:
+            self._config["PROXY_LIST"] = []
+        
+        # 处理文件路径黑名单
+        blacklist_str = self._config.get("FILE_PATH_BLACKLIST", "")
+        if blacklist_str:
+            self._config["FILE_PATH_BLACKLIST_LIST"] = [
+                item.strip().lower() for item in blacklist_str.split(',') if item.strip()
+            ]
+        else:
+            self._config["FILE_PATH_BLACKLIST_LIST"] = []
+        
+        # 处理GPT Load组名列表
+        group_names_str = self._config.get("GPT_LOAD_GROUP_NAME", "")
+        if group_names_str:
+            self._config["GPT_LOAD_GROUP_NAMES"] = [
+                name.strip() for name in group_names_str.split(',') if name.strip()
+            ]
+        else:
+            self._config["GPT_LOAD_GROUP_NAMES"] = []
+        
+        # 转换数字类型
+        for key in ["DATE_RANGE_DAYS", "MAX_CONCURRENT_SEARCHES", "MAX_CONCURRENT_VALIDATIONS",
+                    "BATCH_SIZE", "CHECKPOINT_INTERVAL", "LOOP_DELAY"]:
+            if key in self._config:
+                try:
+                    self._config[key] = int(self._config[key])
+                except (ValueError, TypeError):
+                    logger.warning(f"Failed to convert {key} to int, using default")
+                    self._config[key] = int(self.DEFAULTS[key])
+        
+        # 转换布尔类型
+        for key in ["GEMINI_BALANCER_SYNC_ENABLED", "GPT_LOAD_SYNC_ENABLED"]:
+            if key in self._config:
+                self._config[key] = self._parse_bool(self._config[key])
+    
+    def _parse_bool(self, value: Any) -> bool:
+        """
+        解析布尔值
+        
+        Args:
+            value: 要解析的值
+            
+        Returns:
+            布尔值
+        """
+        if isinstance(value, bool):
+            return value
+        
+        if isinstance(value, str):
+            value = value.strip().lower()
+            return value in ('true', '1', 'yes', 'on', 'enabled')
+        
+        if isinstance(value, int):
+            return bool(value)
+        
+        return False
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        """
+        获取配置值
+        
+        Args:
+            key: 配置键
+            default: 默认值
+            
+        Returns:
+            配置值
+        """
+        return self._config.get(key, default)
+    
+    def set(self, key: str, value: Any) -> None:
+        """
+        设置配置值
+        
+        Args:
+            key: 配置键
+            value: 配置值
+        """
+        self._config[key] = value
+        # 同时更新环境变量
+        os.environ[key] = str(value)
+    
+    def get_all(self) -> Dict[str, Any]:
+        """
+        获取所有配置
+        
+        Returns:
+            配置字典
+        """
+        return self._config.copy()
+    
+    def validate(self) -> bool:
+        """
+        验证配置
+        
+        Returns:
+            配置是否有效
+        """
+        errors = []
+        
+        # 检查必需的配置
+        if not self.get("GITHUB_TOKENS_LIST"):
+            errors.append("GitHub tokens not configured (GITHUB_TOKENS)")
+        
+        # 检查数据路径
+        data_path = self.get("DATA_PATH")
+        if not data_path:
+            errors.append("Data path not configured (DATA_PATH)")
+        
+        # 检查Gemini Balancer配置
+        if self.get("GEMINI_BALANCER_SYNC_ENABLED"):
+            if not self.get("GEMINI_BALANCER_URL"):
+                errors.append("Gemini Balancer URL not configured")
+            if not self.get("GEMINI_BALANCER_AUTH"):
+                errors.append("Gemini Balancer auth not configured")
+        
+        # 检查GPT Load配置
+        if self.get("GPT_LOAD_SYNC_ENABLED"):
+            if not self.get("GPT_LOAD_URL"):
+                errors.append("GPT Load URL not configured")
+            if not self.get("GPT_LOAD_AUTH"):
+                errors.append("GPT Load auth not configured")
+            if not self.get("GPT_LOAD_GROUP_NAMES"):
+                errors.append("GPT Load group names not configured")
+        
+        # 记录错误
+        if errors:
+            for error in errors:
+                logger.error(f"Configuration error: {error}")
+            return False
+        
+        logger.info("Configuration validation passed")
+        return True
+    
+    def get_random_proxy(self) -> Optional[Dict[str, str]]:
+        """
+        获取随机代理配置
+        
+        Returns:
+            代理配置字典，如果未配置则返回None
+        """
+        proxy_list = self.get("PROXY_LIST", [])
+        if not proxy_list:
+            return None
+        
+        proxy_url = random.choice(proxy_list)
+        return {
+            'http': proxy_url,
+            'https': proxy_url
+        }
+    
+    def get_github_token(self, index: Optional[int] = None) -> Optional[str]:
+        """
+        获取GitHub token
+        
+        Args:
+            index: token索引（可选，不提供则随机选择）
+            
+        Returns:
+            GitHub token，如果未配置则返回None
+        """
+        tokens = self.get("GITHUB_TOKENS_LIST", [])
+        if not tokens:
+            return None
+        
+        if index is not None:
+            return tokens[index % len(tokens)]
+        
+        return random.choice(tokens)
+    
+    def get_data_path(self, *paths: str) -> Path:
+        """
+        获取数据目录下的路径
+        
+        Args:
+            *paths: 子路径组件
+            
+        Returns:
+            完整路径
+        """
+        data_path = Path(self.get("DATA_PATH", "/app/data"))
+        if paths:
+            return data_path.joinpath(*paths)
+        return data_path
+    
+    def ensure_data_dirs(self) -> None:
+        """确保必要的数据目录存在"""
+        # 主数据目录
+        data_path = self.get_data_path()
+        data_path.mkdir(parents=True, exist_ok=True)
+        
+        # 子目录
+        subdirs = ["keys", "logs", "checkpoints"]
+        for subdir in subdirs:
+            subdir_path = data_path / subdir
+            subdir_path.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"Data directories ensured at {data_path}")
+    
+    def __repr__(self) -> str:
+        """字符串表示"""
+        token_count = len(self.get("GITHUB_TOKENS_LIST", []))
+        proxy_count = len(self.get("PROXY_LIST", []))
+        return (
+            f"ConfigService("
+            f"tokens={token_count}, "
+            f"proxies={proxy_count}, "
+            f"data_path={self.get('DATA_PATH')}"
+            f")"
+        )
+
+
+# 单例实例
+_config_service: Optional[ConfigService] = None
+
+
+def get_config_service() -> ConfigService:
+    """
+    获取配置服务单例
+    
+    Returns:
+        配置服务实例
+    """
+    global _config_service
+    if _config_service is None:
+        _config_service = ConfigService()
+    return _config_service
