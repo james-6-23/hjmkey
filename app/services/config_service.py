@@ -34,7 +34,7 @@ class ConfigService(IConfigService):
         "GITHUB_API_URL": "https://api.github.com/search/code",
         
         # 数据路径配置
-        "DATA_PATH": "/app/data",
+        "DATA_PATH": "data",
         "QUERIES_FILE": "queries.txt",
         "SCANNED_SHAS_FILE": "scanned_shas.txt",
         
@@ -391,7 +391,7 @@ class ConfigService(IConfigService):
         Returns:
             完整路径
         """
-        data_path = Path(self.get("DATA_PATH", "/app/data"))
+        data_path = Path(self.get("DATA_PATH", "data"))
         if paths:
             return data_path.joinpath(*paths)
         return data_path

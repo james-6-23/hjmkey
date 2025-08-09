@@ -48,6 +48,16 @@ class TokenHunter:
             if proxy:
                 logger.info(f"🌐 从环境变量加载代理配置: {proxy['http']}")
         
+        # 如果没有提供GitHub token，尝试从TokenManager获取一个
+        if github_token is None and os.path.exists(tokens_file):
+            token_manager = TokenManager(tokens_file)
+            if token_manager.tokens:
+                try:
+                    github_token = token_manager.get_next_token()
+                    logger.info(f"🔑 使用TokenManager中的token进行GitHub搜索")
+                except Exception as e:
+                    logger.warning(f"⚠️ 无法从TokenManager获取token: {e}")
+        
         self.github_searcher = GitHubSearcher(github_token, proxy)
         self.local_searcher = LocalSearcher()
         self.validator = TokenValidator(proxy)
