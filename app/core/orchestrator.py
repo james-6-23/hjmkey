@@ -6,14 +6,21 @@
 import asyncio
 import time
 import logging
+import sys
 from typing import List, Dict, Any, Optional, Set
 from dataclasses import dataclass, field
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+# 添加项目根目录到Python路径
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.core.scanner import Scanner, ScanResult, ScanFilter
 from app.core.validator import KeyValidator, ValidationResult, ValidationStatus
 from app.core.container import inject
+from app.services.config_service import get_config_service
+from utils.github_client import GitHubClient
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +100,16 @@ class Orchestrator:
         self.stats = OrchestrationStats()
         self.running = False
         self._executor = ThreadPoolExecutor(max_workers=self.config.max_concurrent_searches)
+        
+        # 初始化GitHub客户端
+        config_service = get_config_service()
+        tokens = config_service.get("GITHUB_TOKENS_LIST", [])
+        if tokens:
+            self.github_client = GitHubClient(tokens)
+            logger.info(f"✅ GitHub客户端初始化成功，使用 {len(tokens)} 个tokens")
+        else:
+            self.github_client = None
+            logger.warning("⚠️ 没有可用的GitHub tokens，搜索功能将无法使用")
         
     async def run(self, queries: List[str], max_loops: Optional[int] = None) -> OrchestrationStats:
         """
@@ -231,9 +248,12 @@ class Orchestrator:
             # 标准化查询
             normalized_query = self.scanner.normalize_query(query)
             
-            # 这里应该调用GitHub客户端进行搜索
-            # 由于我们还没有重构GitHub客户端，先创建一个占位结果
-            search_result = self._mock_search(query)
+            # 调用GitHub客户端进行搜索
+            if not self.github_client:
+                logger.error("❌ GitHub客户端未初始化，无法执行搜索")
+                return
+            
+            search_result = self.github_client.search_for_keys(query)
             
             if not search_result or not search_result.get("items"):
                 logger.info(f"📭 No items found for query: {query}")
@@ -307,9 +327,12 @@ class Orchestrator:
         if result.skipped_items > 0:
             return result
         
-        # 这里应该获取文件内容并提取密钥
-        # 由于还没有GitHub客户端，使用模拟数据
-        content = self._mock_get_file_content(item)
+        # 获取文件内容
+        if not self.github_client:
+            logger.error("❌ GitHub客户端未初始化，无法获取文件内容")
+            return result
+        
+        content = self.github_client.get_file_content(item)
         
         if not content:
             logger.warning(f"⚠️ Failed to fetch content for: {item.get('path', 'unknown')}")
@@ -338,30 +361,6 @@ class Orchestrator:
         
         return result
     
-    def _mock_search(self, query: str) -> Dict[str, Any]:
-        """
-        模拟搜索（临时方法，将被真实的GitHub客户端替换）
-        
-        Args:
-            query: 查询字符串
-            
-        Returns:
-            模拟的搜索结果
-        """
-        # 返回空结果以避免实际处理
-        return {"items": []}
-    
-    def _mock_get_file_content(self, item: Dict[str, Any]) -> str:
-        """
-        模拟获取文件内容（临时方法）
-        
-        Args:
-            item: 搜索结果项
-            
-        Returns:
-            模拟的文件内容
-        """
-        return ""
     
     def _save_checkpoint(self) -> None:
         """保存检查点"""

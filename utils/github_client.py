@@ -1,12 +1,13 @@
 import base64
 import random
 import time
+import logging
 from typing import Dict, List, Optional, Any
 
 import requests
 
-from common.Logger import logger
-from common.config import Config
+# 使用标准logging而不是自定义Logger
+logger = logging.getLogger(__name__)
 
 
 class GitHubClient:
@@ -60,12 +61,8 @@ class GitHubClient:
 
                 try:
                     total_requests += 1
-                    # 获取随机proxy配置
-                    proxies = Config.get_random_proxy()
-                    if proxies:
-                        response = requests.get(self.GITHUB_API_URL, headers=headers, params=params, timeout=30, proxies=proxies)
-                    else:
-                        response = requests.get(self.GITHUB_API_URL, headers=headers, params=params, timeout=30)
+                    # 暂时不使用代理，简化实现
+                    response = requests.get(self.GITHUB_API_URL, headers=headers, params=params, timeout=30)
                     rate_limit_remaining = response.headers.get('X-RateLimit-Remaining')
                     # 只在剩余次数很少时警告
                     if rate_limit_remaining and int(rate_limit_remaining) < 3:
@@ -170,14 +167,9 @@ class GitHubClient:
             headers["Authorization"] = f"token {token}"
 
         try:
-            # 获取proxy配置
-            proxies = Config.get_random_proxy()
-
             logger.info(f"🔍 Processing file: {metadata_url}")
-            if proxies:
-                metadata_response = requests.get(metadata_url, headers=headers, proxies=proxies)
-            else:
-                metadata_response = requests.get(metadata_url, headers=headers)
+            # 暂时不使用代理，简化实现
+            metadata_response = requests.get(metadata_url, headers=headers)
 
             metadata_response.raise_for_status()
             file_metadata = metadata_response.json()
@@ -200,10 +192,8 @@ class GitHubClient:
                 logger.warning(f"⚠️ No download URL found for file: {metadata_url}")
                 return None
 
-            if proxies:
-                content_response = requests.get(download_url, headers=headers, proxies=proxies)
-            else:
-                content_response = requests.get(download_url, headers=headers)
+            # 暂时不使用代理，简化实现
+            content_response = requests.get(download_url, headers=headers)
             logger.info(f"⏳ checking for keys from:  {download_url},status: {content_response.status_code}")
             content_response.raise_for_status()
             return content_response.text
