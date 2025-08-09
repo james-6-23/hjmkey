@@ -10,8 +10,13 @@ from typing import Dict, Any, Optional, List
 from pathlib import Path
 from dotenv import load_dotenv
 import logging
+import sys
+
+# 添加utils目录到Python路径
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.services.interfaces import IConfigService
+from utils.token_hunter.manager import TokenManager, NoValidTokenError, NoQuotaError
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +87,10 @@ class ConfigService(IConfigService):
         self._env_file = env_file or ".env"
         self._override = override
         
+        # 初始化Token管理器
+        self.token_manager: Optional[TokenManager] = None
+        self._init_token_manager()
+        
         # 加载配置
         self.reload()
         
@@ -106,16 +115,36 @@ class ConfigService(IConfigService):
         
         logger.info(f"Configuration loaded with {len(self._config)} settings")
     
+    def _init_token_manager(self) -> None:
+        """初始化Token管理器"""
+        # 获取tokens文件路径
+        data_path = self._config.get("DATA_PATH", "/app/data")
+        tokens_file = Path(data_path) / "github_tokens.txt"
+        
+        try:
+            self.token_manager = TokenManager(str(tokens_file), auto_validate=False)
+            logger.info(f"✅ Token管理器初始化成功，从 {tokens_file} 加载了 {len(self.token_manager.tokens)} 个tokens")
+        except Exception as e:
+            logger.error(f"❌ Token管理器初始化失败: {e}")
+            self.token_manager = None
+    
     def _process_special_configs(self) -> None:
         """处理需要特殊转换的配置"""
-        # 处理GitHub tokens列表
-        tokens_str = self._config.get("GITHUB_TOKENS", "")
-        if tokens_str:
-            self._config["GITHUB_TOKENS_LIST"] = [
-                token.strip() for token in tokens_str.split(',') if token.strip()
-            ]
+        # 从txt文件加载GitHub tokens
+        if self.token_manager and self.token_manager.tokens:
+            self._config["GITHUB_TOKENS_LIST"] = self.token_manager.tokens
+            logger.info(f"✅ 从github_tokens.txt加载了 {len(self.token_manager.tokens)} 个tokens")
         else:
-            self._config["GITHUB_TOKENS_LIST"] = []
+            # 兼容旧方式：从环境变量加载
+            tokens_str = self._config.get("GITHUB_TOKENS", "")
+            if tokens_str:
+                self._config["GITHUB_TOKENS_LIST"] = [
+                    token.strip() for token in tokens_str.split(',') if token.strip()
+                ]
+                logger.info(f"⚠️ 从环境变量加载了 {len(self._config['GITHUB_TOKENS_LIST'])} 个tokens（建议迁移到github_tokens.txt）")
+            else:
+                self._config["GITHUB_TOKENS_LIST"] = []
+                logger.warning("⚠️ 未找到GitHub tokens，请在data/github_tokens.txt中添加tokens")
         
         # 处理代理列表
         proxy_str = self._config.get("PROXY", "")
@@ -226,36 +255,36 @@ class ConfigService(IConfigService):
         
         # 检查必需的配置
         if not self.get("GITHUB_TOKENS_LIST"):
-            errors.append("GitHub tokens not configured (GITHUB_TOKENS)")
+            errors.append("❌ 未配置GitHub tokens（请在data/github_tokens.txt中添加）")
         
         # 检查数据路径
         data_path = self.get("DATA_PATH")
         if not data_path:
-            errors.append("Data path not configured (DATA_PATH)")
+            errors.append("❌ 未配置数据路径 (DATA_PATH)")
         
         # 检查Gemini Balancer配置
         if self.get("GEMINI_BALANCER_SYNC_ENABLED"):
             if not self.get("GEMINI_BALANCER_URL"):
-                errors.append("Gemini Balancer URL not configured")
+                errors.append("❌ 未配置Gemini Balancer URL")
             if not self.get("GEMINI_BALANCER_AUTH"):
-                errors.append("Gemini Balancer auth not configured")
+                errors.append("❌ 未配置Gemini Balancer认证信息")
         
         # 检查GPT Load配置
         if self.get("GPT_LOAD_SYNC_ENABLED"):
             if not self.get("GPT_LOAD_URL"):
-                errors.append("GPT Load URL not configured")
+                errors.append("❌ 未配置GPT Load URL")
             if not self.get("GPT_LOAD_AUTH"):
-                errors.append("GPT Load auth not configured")
+                errors.append("❌ 未配置GPT Load认证信息")
             if not self.get("GPT_LOAD_GROUP_NAMES"):
-                errors.append("GPT Load group names not configured")
+                errors.append("❌ 未配置GPT Load组名")
         
         # 记录错误
         if errors:
             for error in errors:
-                logger.error(f"Configuration error: {error}")
+                logger.error(f"配置错误: {error}")
             return False
         
-        logger.info("Configuration validation passed")
+        logger.info("✅ 配置验证通过")
         return True
     
     def get_random_proxy(self) -> Optional[Dict[str, str]]:
@@ -277,22 +306,80 @@ class ConfigService(IConfigService):
     
     def get_github_token(self, index: Optional[int] = None) -> Optional[str]:
         """
-        获取GitHub token
+        获取GitHub token（使用Token管理器的循环机制）
         
         Args:
-            index: token索引（可选，不提供则随机选择）
+            index: token索引（已废弃，保留用于兼容）
             
         Returns:
             GitHub token，如果未配置则返回None
         """
+        # 优先使用Token管理器
+        if self.token_manager:
+            try:
+                token = self.token_manager.get_next_token()
+                return token
+            except (NoValidTokenError, NoQuotaError) as e:
+                logger.error(f"❌ 获取token失败: {e}")
+                return None
+        
+        # 兼容旧方式
         tokens = self.get("GITHUB_TOKENS_LIST", [])
         if not tokens:
+            logger.error("❌ 没有可用的GitHub tokens")
             return None
         
         if index is not None:
             return tokens[index % len(tokens)]
         
         return random.choice(tokens)
+    
+    def add_github_token(self, token: str, validate: bool = True) -> bool:
+        """
+        添加新的GitHub token
+        
+        Args:
+            token: GitHub token
+            validate: 是否验证token
+            
+        Returns:
+            是否添加成功
+        """
+        if self.token_manager:
+            success = self.token_manager.add_token(token, validate=validate)
+            if success:
+                # 更新配置中的token列表
+                self._config["GITHUB_TOKENS_LIST"] = self.token_manager.tokens
+                logger.info(f"✅ 成功添加新token，当前共 {len(self.token_manager.tokens)} 个tokens")
+            return success
+        
+        logger.error("❌ Token管理器未初始化")
+        return False
+    
+    def validate_all_tokens(self) -> Dict[str, Any]:
+        """
+        验证所有GitHub tokens
+        
+        Returns:
+            验证结果
+        """
+        if self.token_manager:
+            return self.token_manager.validate_all_tokens()
+        
+        logger.error("❌ Token管理器未初始化")
+        return {}
+    
+    def get_token_status(self) -> Dict[str, Any]:
+        """
+        获取Token管理器状态
+        
+        Returns:
+            状态信息
+        """
+        if self.token_manager:
+            return self.token_manager.get_status()
+        
+        return {"error": "Token管理器未初始化"}
     
     def get_data_path(self, *paths: str) -> Path:
         """
@@ -327,9 +414,10 @@ class ConfigService(IConfigService):
         """字符串表示"""
         token_count = len(self.get("GITHUB_TOKENS_LIST", []))
         proxy_count = len(self.get("PROXY_LIST", []))
+        token_source = "txt文件" if self.token_manager else "环境变量"
         return (
             f"ConfigService("
-            f"tokens={token_count}, "
+            f"tokens={token_count}({token_source}), "
             f"proxies={proxy_count}, "
             f"data_path={self.get('DATA_PATH')}"
             f")"
