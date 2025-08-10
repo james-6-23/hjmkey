@@ -259,11 +259,19 @@ class OrchestratorV2:
         response_time = time.time() - start_time
         
         # 更新 TokenPool 状态
-        self.token_pool.update_token_status(token, {
-            'status_code': 200 if search_result else 500,
-            'headers': {},  # 需要从 GitHubClient 获取
-            'response_time': response_time
-        })
+        # 注意：由于当前GitHubClient不返回headers，我们需要手动减少配额
+        if search_result:
+            # 成功请求，减少配额
+            metrics = self.token_pool.metrics.get(token)
+            if metrics:
+                # 每次搜索消耗1个配额
+                metrics.remaining = max(0, metrics.remaining - 1)
+                metrics.record_success(response_time)
+        else:
+            # 失败请求
+            metrics = self.token_pool.metrics.get(token)
+            if metrics:
+                metrics.record_failure("Search failed")
         
         if not search_result or not search_result.get("items"):
             logger.info(f"📭 No results found")
@@ -422,7 +430,15 @@ class OrchestratorV2:
         # 保存 TokenPool 状态
         if self.token_pool:
             pool_status = self.token_pool.get_pool_status()
-            self.artifact_manager.save_artifact("token_pool_final.json", pool_status)
+            # 转换枚举为字符串以便序列化
+            if 'strategy_usage' in pool_status:
+                pool_status['strategy_usage'] = {
+                    str(k): v for k, v in pool_status['strategy_usage'].items()
+                }
+            try:
+                self.artifact_manager.save_artifact("token_pool_final.json", pool_status)
+            except Exception as e:
+                logger.error(f"Failed to save token pool status: {e}")
     
     def _finalize_run(self):
         """最终化运行"""
@@ -431,16 +447,34 @@ class OrchestratorV2:
         # 完成统计
         self.stats.finalize()
         
-        # 保存密钥（安全存储）
+        # 保存密钥（由于secure_storage为None，直接保存到文件）
         keys_by_status = {
             status.name: self.stats.get_keys_list(status)
             for status in KeyStatus
         }
-        self.secure_storage.save_keys(keys_by_status)
-        self.secure_storage.save_masked_summary(keys_by_status)
+        
+        # 保存密钥摘要到文件（替代secure_storage）
+        try:
+            summary_file = self.path_manager.current_run_dir / "keys_summary.json"
+            import json
+            with open(summary_file, 'w', encoding='utf-8') as f:
+                # 创建脱敏的摘要
+                masked_summary = {}
+                for status_name, keys in keys_by_status.items():
+                    masked_summary[status_name] = {
+                        'count': len(keys),
+                        'keys': [mask_key(k) for k in keys[:5]]  # 只显示前5个脱敏密钥
+                    }
+                json.dump(masked_summary, f, indent=2, ensure_ascii=False)
+            logger.info(f"💾 Keys summary saved to {summary_file}")
+        except Exception as e:
+            logger.error(f"Failed to save keys summary: {e}")
         
         # 保存最终报告
-        self.artifact_manager.save_final_report(self.stats.summary())
+        try:
+            self.artifact_manager.save_final_report(self.stats.summary())
+        except Exception as e:
+            logger.error(f"Failed to save final report: {e}")
         
         # 显示最终统计
         self._log_final_stats()
@@ -466,10 +500,13 @@ class OrchestratorV2:
         # TokenPool 统计
         if self.token_pool:
             pool_status = self.token_pool.get_pool_status()
-            logger.info("📊 TOKEN POOL STATISTICS")
+            used_quota = pool_status['total_limit'] - pool_status['total_remaining']
+            utilization_pct = (used_quota / pool_status['total_limit'] * 100) if pool_status['total_limit'] > 0 else 0
+            
+            logger.info("📊 Token池统计")
             logger.info(f"Total tokens: {pool_status['total_tokens']}")
             logger.info(f"Healthy/Limited/Exhausted: {pool_status['healthy']}/{pool_status['limited']}/{pool_status['exhausted']}")
-            logger.info(f"Utilization: {pool_status['utilization']}")
+            logger.info(f"Quota used: {used_quota}/{pool_status['total_limit']} ({utilization_pct:.1f}%)")
             logger.info("=" * 60)
 
 
@@ -536,15 +573,15 @@ class OrchestratorV2:
         # Token Pool 状态
         if self.token_pool:
             pool_status = self.token_pool.get_pool_status()
-            logger.info(f"🎯 Token Pool Status:")
-            logger.info(f"   Total tokens: {pool_status['total_tokens']}")
-            logger.info(f"   Healthy: {pool_status['healthy']}")
-            logger.info(f"   Limited: {pool_status['limited']}")
-            logger.info(f"   Exhausted: {pool_status['exhausted']}")
-            logger.info(f"   Quota remaining: {pool_status['total_remaining']}/{pool_status['total_limit']}")
-            logger.info(f"   Utilization: {pool_status['utilization']}")
+            # 计算实际使用的配额
+            used_quota = pool_status['total_limit'] - pool_status['total_remaining']
+            utilization_pct = (used_quota / pool_status['total_limit'] * 100) if pool_status['total_limit'] > 0 else 0
+            
+            logger.info("╠" + "═" * 58 + "╣")
+            logger.info(f"║ 🎯 Token Status: {pool_status['healthy']} OK, {pool_status['limited']} Limited, {pool_status['exhausted']} Exhausted{' ' * (10 - len(str(pool_status['healthy'])) - len(str(pool_status['limited'])) - len(str(pool_status['exhausted'])))} ║")
+            logger.info(f"║    Quota: {pool_status['total_remaining']}/{pool_status['total_limit']} ({utilization_pct:.1f}% used){' ' * (25 - len(f\"{pool_status['total_remaining']}/{pool_status['total_limit']} ({utilization_pct:.1f}% used)\"))} ║")
         
-        logger.info("=" * 60)
+        logger.info("╚" + "═" * 58 + "╝")
     
     async def _validate_keys_concurrent(self, keys: List[str]) -> List[Any]:
         """并发验证密钥"""
