@@ -576,7 +576,27 @@ class OrchestratorV2:
             # 计算实际使用的配额
             used_quota = pool_status['total_limit'] - pool_status['total_remaining']
             utilization_pct = (used_quota / pool_status['total_limit'] * 100) if pool_status['total_limit'] > 0 else 0
-            
+                # 状态行
+            status_text = (
+            f"{pool_status['healthy']} OK, "
+             f"{pool_status['limited']} Limited, "
+            f"{pool_status['exhausted']} Exhausted"
+            )
+            status_pad = max(
+        0,
+        10
+        - len(str(pool_status['healthy']))
+        - len(str(pool_status['limited']))
+        - len(str(pool_status['exhausted']))
+        )
+    logger.info(f"║ 🎯 Token Status: {status_text}{' ' * status_pad} ║")
+
+    # 配额行（先拼好文本再算长度）
+    quota_text = f"{pool_status['total_remaining']}/{pool_status['total_limit']} ({utilization_pct:.1f}% used)"
+    quota_pad = max(0, 25 - len(quota_text))
+    logger.info(f"║    Quota: {quota_text}{' ' * quota_pad} ║")
+
+    logger.info("╚" + "═" * 58 + "╝")
             logger.info("╠" + "═" * 58 + "╣")
             logger.info(f"║ 🎯 Token Status: {pool_status['healthy']} OK, {pool_status['limited']} Limited, {pool_status['exhausted']} Exhausted{' ' * (10 - len(str(pool_status['healthy'])) - len(str(pool_status['limited'])) - len(str(pool_status['exhausted'])))} ║")
             logger.info(f"║    Quota: {pool_status['total_remaining']}/{pool_status['total_limit']} ({utilization_pct:.1f}% used){' ' * (25 - len(f\"{pool_status['total_remaining']}/{pool_status['total_limit']} ({utilization_pct:.1f}% used)\"))} ║")
