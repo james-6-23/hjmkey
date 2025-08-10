@@ -492,7 +492,7 @@ class Orchestrator:
             genai.configure(api_key=key)
             
             # 尝试访问付费版才有的模型
-            paid_models = ["gemini-1.5-pro", "gemini-1.5-flash"]
+            paid_models = ["gemini-2.5-pro", "gemini-2.5-flash"]
             
             for model_name in paid_models:
                 try:

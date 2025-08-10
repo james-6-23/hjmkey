@@ -11,12 +11,14 @@
 3. **增量扫描** 📊 - 支持断点续传，避免重复扫描已处理的文件
 4. **智能过滤** 🚫 - 自动过滤文档、示例、测试文件，专注有效代码
 5. **外部同步** 🔄 - 支持向[Gemini-Balancer](https://github.com/snailyp/gemini-balance)和[GPT-Load](https://github.com/tbphp/gpt-load)同步发现的密钥
+6. **付费版识别** 💎 - 使用Cache API精确识别Gemini付费版密钥
+7. **Token循环** 🔄 - GitHub tokens自动轮换，避免单个token超限
 
 ### 🔮 待开发功能 (TODO)
 
 - [ ] **数据库支持保存key** 💾 - 支持将发现的API密钥持久化存储到数据库中
 - [ ] **API、可视化展示抓取的key列表** 📊 - 提供API接口和可视化界面获取已抓取的密钥列表
-- [ ] **付费key检测** 💰 - 额外check下付费key
+- [x] **付费key检测** 💰 - 使用Cache API精确识别付费版密钥（已完成）
 
 ## 📋 目录 🗂️
 

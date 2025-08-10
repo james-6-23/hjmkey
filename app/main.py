@@ -214,6 +214,10 @@ AIzaSy in:file filename:config
             logger.info(f"  Processing rate: {stats.processing_rate:.2f} items/second")
             logger.info("=" * 60)
             
+        except asyncio.CancelledError:
+            logger.info("⛔ Application cancelled")
+            if self.orchestrator:
+                self.orchestrator.stop()
         except KeyboardInterrupt:
             logger.info("⛔ Application interrupted by user")
             if self.orchestrator:
@@ -235,7 +239,51 @@ AIzaSy in:file filename:config
         if self.container:
             self.container.clear()
         
+        # 在退出前验证所有找到的有效密钥
+        await self._validate_keys_on_exit()
+        
         logger.info("✅ Cleanup complete")
+    
+    async def _validate_keys_on_exit(self) -> None:
+        """
+        在程序退出时验证所有有效密钥
+        识别哪些是付费版本
+        """
+        try:
+            from utils.gemini_key_validator import validate_keys_from_file
+            from datetime import datetime
+            import glob
+            
+            # 查找今天的有效密钥文件
+            date_str = datetime.now().strftime('%Y%m%d')
+            valid_keys_pattern = f"data/keys/keys_valid_{date_str}.txt"
+            
+            files = glob.glob(valid_keys_pattern)
+            if not files:
+                logger.info("没有找到今天的有效密钥文件，跳过验证")
+                return
+            
+            logger.info("=" * 60)
+            logger.info("🔍 程序退出，开始验证所有有效密钥...")
+            logger.info("=" * 60)
+            
+            # 验证每个文件中的密钥
+            for file_path in files:
+                logger.info(f"📋 验证文件: {file_path}")
+                results = await validate_keys_from_file(file_path, concurrency=10)
+                
+                if results:
+                    logger.info("=" * 60)
+                    logger.info("📊 验证完成统计:")
+                    logger.info(f"   总计验证: {results['total']} 个")
+                    logger.info(f"   💎 付费版: {results['paid']} 个")
+                    logger.info(f"   🆓 免费版: {results['free']} 个")
+                    logger.info(f"   ❌ 无效: {results['invalid']} 个")
+                    logger.info(f"   ⏱️ 耗时: {results['elapsed_time']:.2f} 秒")
+                    logger.info("=" * 60)
+                    
+        except Exception as e:
+            logger.error(f"验证密钥时出错: {e}")
 
 
 def main():
@@ -260,6 +308,9 @@ def main():
         # 运行主循环
         asyncio.run(app.run())
         
+    except KeyboardInterrupt:
+        logger.info("\n⛔ Program interrupted by user (Ctrl+C)")
+        sys.exit(0)
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)
