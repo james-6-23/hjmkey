@@ -243,22 +243,25 @@ class MonitoringFeature(Feature):
         
         # 启动后台任务
         self.background_tasks = []
-        if self.enabled:
-            self._start_background_tasks()
         
         logger.info("📊 监控功能初始化")
     
-    def _start_background_tasks(self):
+    def start_background_tasks(self):
         """启动后台监控任务"""
-        # 启动指标导出任务
-        metrics_task = asyncio.create_task(self._export_metrics_periodically())
-        self.background_tasks.append(metrics_task)
-        
-        # 启动告警检查任务
-        alert_task = asyncio.create_task(self._check_alerts_periodically())
-        self.background_tasks.append(alert_task)
-        
-        logger.debug("🔄 后台监控任务已启动")
+        if self.enabled:
+            # 启动指标导出任务
+            metrics_task = asyncio.create_task(self._export_metrics_periodically())
+            self.background_tasks.append(metrics_task)
+            
+            # 启动告警检查任务
+            alert_task = asyncio.create_task(self._check_alerts_periodically())
+            self.background_tasks.append(alert_task)
+            
+            logger.debug("🔄 后台监控任务已启动")
+    
+    def _start_background_tasks(self):
+        """启动后台监控任务 (兼容性方法)"""
+        self.start_background_tasks()
     
     async def _export_metrics_periodically(self):
         """定期导出指标"""

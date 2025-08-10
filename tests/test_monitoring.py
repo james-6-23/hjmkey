@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from app.features.monitoring import MonitoringFeature
 
 
-def test_monitoring():
+async def test_monitoring():
     """测试监控功能"""
     print("🧪 测试监控功能...")
     
@@ -31,6 +31,8 @@ def test_monitoring():
     
     # 创建监控功能实例
     monitoring = MonitoringFeature(config)
+    # 启动后台任务
+    monitoring.start_background_tasks()
     
     # 测试健康检查
     print(f"✅ 健康检查: {monitoring.is_healthy()}")
@@ -60,10 +62,13 @@ def test_monitoring():
     alerts = monitoring.get_recent_alerts()
     print(f"🔔 最近告警数量: {len(alerts)}")
     
+    # 清理资源
+    monitoring.cleanup()
+    
     print("\n✅ 监控功能测试完成")
 
 
-def test_alerts():
+async def test_alerts():
     """测试告警功能"""
     print("\n🧪 测试告警功能...")
     
@@ -78,6 +83,8 @@ def test_alerts():
     
     # 创建监控功能实例
     monitoring = MonitoringFeature(config)
+    # 启动后台任务
+    monitoring.start_background_tasks()
     
     # 模拟高错误率情况
     print("📊 模拟高错误率...")
@@ -95,12 +102,20 @@ def test_alerts():
     alerts = monitoring.get_recent_alerts()
     print(f"🔔 最近告警数量: {len(alerts)}")
     
+    # 清理资源
+    monitoring.cleanup()
+    
     print("\n✅ 告警功能测试完成")
 
 
-if __name__ == "__main__":
+async def main():
+    """主测试函数"""
     # 测试基本监控功能
-    test_monitoring()
+    await test_monitoring()
     
     # 测试告警功能
-    test_alerts()
+    await test_alerts()
+
+if __name__ == "__main__":
+    # 运行异步测试
+    asyncio.run(main())
