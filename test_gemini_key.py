@@ -46,12 +46,20 @@ class GeminiKeyChecker:
         
         try:
             # 尝试使用最基础的模型进行简单调用
-            model = genai.GenerativeModel('gemini-pro')
-            response = model.generate_content("Say 'test'")
-            
-            result["valid"] = True
-            result["message"] = "✅ 密钥有效"
-            return result
+            # 首先尝试新的gemini-1.5-flash模型
+            try:
+                model = genai.GenerativeModel('gemini-1.5-flash')
+                response = model.generate_content("Say 'test'")
+                result["valid"] = True
+                result["message"] = "✅ 密钥有效 (gemini-1.5-flash)"
+                return result
+            except google_exceptions.NotFound:
+                # 如果新模型不存在，回退到旧的gemini-pro模型
+                model = genai.GenerativeModel('gemini-pro')
+                response = model.generate_content("Say 'test'")
+                result["valid"] = True
+                result["message"] = "✅ 密钥有效 (gemini-pro)"
+                return result
             
         except google_exceptions.PermissionDenied:
             result["message"] = "❌ 密钥无效或未授权"
@@ -59,6 +67,9 @@ class GeminiKeyChecker:
         except google_exceptions.TooManyRequests:
             result["message"] = "⚠️ 达到速率限制"
             result["error"] = "RATE_LIMIT"
+        except google_exceptions.NotFound:
+            result["message"] = "❌ 模型不存在，请检查API版本"
+            result["error"] = "MODEL_NOT_FOUND"
         except Exception as e:
             error_str = str(e)
             if "403" in error_str or "SERVICE_DISABLED" in error_str:
@@ -89,10 +100,10 @@ class GeminiKeyChecker:
         
         # 测试不同的模型
         test_models = [
+            ("gemini-1.5-flash", "快速模型"),
+            ("gemini-1.5-pro", "高级模型 (付费)"),
             ("gemini-pro", "基础模型"),
             ("gemini-pro-vision", "视觉模型"),
-            ("gemini-1.5-pro", "高级模型 (付费)"),
-            ("gemini-1.5-flash", "快速模型"),
             ("gemini-2.0-flash-exp", "实验模型"),
         ]
         
@@ -155,7 +166,7 @@ class GeminiKeyChecker:
             model = genai.GenerativeModel('gemini-pro')
             successful_requests = 0
             
-            for i in range(10):
+            for i in range(5):  # 减少测试请求数量以提高速度
                 try:
                     response = model.generate_content(f"Count: {i}", 
                         generation_config=genai.types.GenerationConfig(
@@ -163,15 +174,15 @@ class GeminiKeyChecker:
                             temperature=0
                         ))
                     successful_requests += 1
-                    time.sleep(0.1)  # 短暂延迟
+                    time.sleep(0.05)  # 更短的延迟
                 except google_exceptions.TooManyRequests:
                     break
             
             # 根据成功的请求数判断速率限制级别
-            if successful_requests >= 10:
+            if successful_requests >= 5:
                 limits_info["requests_per_minute"] = "60+ (高级)"
                 limits_info["is_high_tier"] = True
-            elif successful_requests >= 5:
+            elif successful_requests >= 3:
                 limits_info["requests_per_minute"] = "15-60 (标准)"
             else:
                 limits_info["requests_per_minute"] = f"<15 (基础，成功{successful_requests}个)"
@@ -290,9 +301,9 @@ def test_keys_from_file(filename: str = "data/gemini_keys.txt"):
                 else:
                     free_keys.append(key)
                 
-                # 延迟避免速率限制
+                # 减少延迟避免速率限制，但仍保持一定的延迟以避免被限制
                 if i < len(keys):
-                    time.sleep(2)
+                    time.sleep(0.5)  # 将延迟从2秒减少到0.5秒
                     
             except Exception as e:
                 print(f"❌ 测试失败: {e}")
