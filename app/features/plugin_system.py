@@ -386,8 +386,6 @@ class PluginSystemFeature(Feature):
         
         # 启动后台任务
         self.background_tasks = []
-        if self.enabled and self.hot_reload_enabled:
-            self._start_background_tasks()
         
         # 加载默认插件
         self._load_default_plugins()
@@ -396,13 +394,18 @@ class PluginSystemFeature(Feature):
         logger.info(f"  目录: {self.plugin_directory}")
         logger.info(f"  热重载: {'启用' if self.hot_reload_enabled else '禁用'}")
     
-    def _start_background_tasks(self):
+    def start_background_tasks(self):
         """启动后台任务"""
-        # 启动热重载检查任务
-        hot_reload_task = asyncio.create_task(self._check_hot_reload())
-        self.background_tasks.append(hot_reload_task)
-        
-        logger.debug("🔄 插件系统后台任务已启动")
+        if self.enabled and self.hot_reload_enabled:
+            # 启动热重载检查任务
+            hot_reload_task = asyncio.create_task(self._check_hot_reload())
+            self.background_tasks.append(hot_reload_task)
+            
+            logger.debug("🔄 插件系统后台任务已启动")
+    
+    def _start_background_tasks(self):
+        """启动后台任务 (兼容性方法)"""
+        self.start_background_tasks()
     
     async def _check_hot_reload(self):
         """定期检查插件文件变更"""

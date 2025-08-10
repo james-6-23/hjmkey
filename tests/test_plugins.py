@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from app.features.plugin_system import PluginSystemFeature
 
 
-def test_plugin_system():
+async def test_plugin_system():
     """测试插件系统功能"""
     print("🧪 测试插件系统...")
     
@@ -28,6 +28,8 @@ def test_plugin_system():
     
     # 创建插件系统实例
     plugin_system = PluginSystemFeature(config)
+    # 启动后台任务
+    plugin_system.start_background_tasks()
     
     # 测试健康检查
     print(f"✅ 健康检查: {plugin_system.is_healthy()}")
@@ -43,10 +45,13 @@ def test_plugin_system():
         print(f"  已加载插件: {len(plugin_system.plugin_manager.plugins)}")
         print(f"  插件列表: {plugin_system.plugin_manager.list_plugins()}")
     
+    # 清理资源
+    plugin_system.cleanup()
+    
     print("\n✅ 插件系统测试完成")
 
 
-def test_example_plugin():
+async def test_example_plugin():
     """测试示例插件"""
     print("\n🧪 测试示例插件...")
     
@@ -60,6 +65,8 @@ def test_example_plugin():
     
     # 创建插件系统实例
     plugin_system = PluginSystemFeature(config)
+    # 启动后台任务
+    plugin_system.start_background_tasks()
     
     # 尝试加载示例插件
     if plugin_system.plugin_manager:
@@ -92,14 +99,24 @@ def test_example_plugin():
         status = plugin_system.plugin_manager.get_plugin_status('example_validator')
         print(f"  插件状态: {status.value}")
     
+    # 清理资源
+    plugin_system.cleanup()
+    
     print("\n✅ 示例插件测试完成")
 
 
-if __name__ == "__main__":
+import asyncio
+
+async def main():
+    """主测试函数"""
     # 测试插件系统基本功能
-    test_plugin_system()
+    await test_plugin_system()
     
     print("\n" + "="*50 + "\n")
     
     # 测试示例插件
-    test_example_plugin()
+    await test_example_plugin()
+
+if __name__ == "__main__":
+    # 运行异步测试
+    asyncio.run(main())
