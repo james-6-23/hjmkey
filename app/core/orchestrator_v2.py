@@ -94,8 +94,11 @@ class OrchestratorV2:
         # 初始化 GitHub 客户端和 TokenPool
         self._init_github_client()
         
-        # 线程池
-        self._executor = ThreadPoolExecutor(max_workers=5)
+        # 线程池（根据CPU核心数调整）
+        import multiprocessing
+        max_workers = min(multiprocessing.cpu_count() * 2, 20)
+        self._executor = ThreadPoolExecutor(max_workers=max_workers)
+        logger.info(f"🔧 Thread pool initialized with {max_workers} workers")
         
         # 运行标志
         self.running = False
@@ -193,31 +196,67 @@ class OrchestratorV2:
         return self.stats
     
     async def _process_queries(self, queries: List[str]):
-        """处理查询列表"""
+        """并发处理查询列表"""
+        # 获取配置
+        config = get_config_service()
+        max_concurrent = config.get("MAX_CONCURRENT_SEARCHES", 5)
+        
+        # 过滤未处理的查询
+        pending_queries = []
         for query in queries:
-            if not self.running or self.shutdown_manager.is_shutdown_requested():
-                break
-            
-            # 检查是否已处理
             if self.scanner.should_skip_query(query):
                 logger.info(f"⏭️ Skipping processed query: {query}")
-                continue
-            
-            try:
-                await self._process_single_query(query)
-                self.stats.mark_query_complete(success=True)
-            except Exception as e:
-                logger.error(f"❌ Query failed: {query} - {e}")
-                self.stats.mark_query_complete(success=False)
-                self.stats.add_error("query_error", str(e), {"query": query})
+            else:
+                pending_queries.append(query)
+        
+        if not pending_queries:
+            logger.info("✅ All queries already processed")
+            return
+        
+        logger.info(f"🚀 Processing {len(pending_queries)} queries with {max_concurrent} concurrent workers")
+        
+        # 创建任务队列
+        tasks = []
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def process_with_semaphore(query):
+            """使用信号量限制并发"""
+            async with semaphore:
+                if not self.running or self.shutdown_manager.is_shutdown_requested():
+                    return
+                
+                try:
+                    await self._process_single_query(query)
+                    self.stats.mark_query_complete(success=True)
+                except Exception as e:
+                    logger.error(f"❌ Query failed: {query} - {e}")
+                    self.stats.mark_query_complete(success=False)
+                    self.stats.add_error("query_error", str(e), {"query": query})
+        
+        # 创建所有任务
+        for query in pending_queries:
+            task = asyncio.create_task(process_with_semaphore(query))
+            tasks.append(task)
+        
+        # 等待所有任务完成
+        await asyncio.gather(*tasks, return_exceptions=True)
     
     async def _process_single_query(self, query: str):
         """处理单个查询"""
         logger.info(f"🔍 Processing query: {query}")
+        query_start_time = time.time()
         
         if not self.github_client or not self.token_pool:
             logger.error("❌ GitHub client not initialized")
             return
+        
+        # 记录查询开始时的统计
+        start_stats = {
+            'valid_free': self.stats.by_status[KeyStatus.VALID_FREE],
+            'valid_paid': self.stats.by_status[KeyStatus.VALID_PAID],
+            'rate_limited': self.stats.by_status[KeyStatus.RATE_LIMITED],
+            'invalid': self.stats.by_status[KeyStatus.INVALID]
+        }
         
         # 从 TokenPool 获取令牌
         token = self.token_pool.select_token()
@@ -263,6 +302,9 @@ class OrchestratorV2:
         
         # 转回扫描状态
         self.state_machine.transition_to(OrchestratorState.SCANNING)
+        
+        # 显示查询完成后的统计
+        self._log_query_summary(query, start_stats, time.time() - query_start_time)
     
     async def _process_item(self, item: Dict[str, Any]):
         """处理单个项目"""
@@ -284,8 +326,8 @@ class OrchestratorV2:
         
         logger.info(f"🔑 Found {len(keys)} suspected keys")
         
-        # 验证密钥
-        validation_results = self.validator.validate_batch(keys)
+        # 批量并发验证密钥
+        validation_results = await self._validate_keys_concurrent(keys)
         
         for val_result in validation_results:
             # 使用脱敏日志
@@ -299,13 +341,22 @@ class OrchestratorV2:
                 self.stats.mark_key(val_result.key, status)
                 logger.info(f"✅ VALID ({status.name}): {masked_key}")
                 
+                # 实时保存有效密钥到文件
+                self._save_key_to_file(val_result.key, status)
+                
             elif val_result.is_rate_limited:
                 self.stats.mark_key(val_result.key, KeyStatus.RATE_LIMITED)
                 logger.warning(f"⚠️ RATE LIMITED: {masked_key}")
                 
+                # 实时保存限流密钥到文件
+                self._save_key_to_file(val_result.key, KeyStatus.RATE_LIMITED)
+                
             else:
                 self.stats.mark_key(val_result.key, KeyStatus.INVALID)
                 logger.info(f"❌ INVALID: {masked_key}")
+                
+                # 实时保存无效密钥到文件（可选）
+                self._save_key_to_file(val_result.key, KeyStatus.INVALID)
         
         # 更新处理统计
         self.stats.items_processed += 1
@@ -346,6 +397,17 @@ class OrchestratorV2:
     def _save_checkpoint(self, label: str = ""):
         """保存检查点"""
         try:
+            # 获取token pool状态，但需要处理不可序列化的对象
+            token_pool_status = None
+            if self.token_pool:
+                pool_status = self.token_pool.get_pool_status()
+                # 转换strategy_usage中的枚举为字符串
+                if 'strategy_usage' in pool_status:
+                    pool_status['strategy_usage'] = {
+                        str(k): v for k, v in pool_status['strategy_usage'].items()
+                    }
+                token_pool_status = pool_status
+            
             checkpoint_data = {
                 "label": label,
                 "timestamp": datetime.now().isoformat(),
@@ -353,7 +415,7 @@ class OrchestratorV2:
                 "state": self.state_machine.state.name,
                 "stats": self.stats.summary(),
                 "processed_queries": list(self.scanner.filter.processed_queries),
-                "token_pool_status": self.token_pool.get_pool_status() if self.token_pool else None
+                "token_pool_status": token_pool_status
             }
             
             self.artifact_manager.save_checkpoint(checkpoint_data)
@@ -422,6 +484,112 @@ class OrchestratorV2:
             logger.info(f"Healthy/Limited/Exhausted: {pool_status['healthy']}/{pool_status['limited']}/{pool_status['exhausted']}")
             logger.info(f"Utilization: {pool_status['utilization']}")
             logger.info("=" * 60)
+
+
+    def _save_key_to_file(self, key: str, status: KeyStatus):
+        """实时保存密钥到文件"""
+        try:
+            # 确定文件路径
+            if status == KeyStatus.VALID_FREE:
+                filename = "keys_valid_free.txt"
+            elif status == KeyStatus.VALID_PAID:
+                filename = "keys_valid_paid.txt"
+            elif status == KeyStatus.RATE_LIMITED:
+                filename = "keys_rate_limited.txt"
+            elif status == KeyStatus.INVALID:
+                filename = "keys_invalid.txt"
+            else:
+                return
+            
+            # 构建完整路径
+            file_path = self.path_manager.current_run_dir / "secrets" / filename
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # 追加写入密钥
+            with open(file_path, 'a', encoding='utf-8') as f:
+                f.write(f"{key}\n")
+            
+            logger.debug(f"💾 Key saved to {filename}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save key to file: {e}")
+    
+    def _log_query_summary(self, query: str, start_stats: Dict, duration: float):
+        """记录查询完成后的摘要"""
+        # 计算新增的密钥
+        new_valid_free = self.stats.by_status[KeyStatus.VALID_FREE] - start_stats['valid_free']
+        new_valid_paid = self.stats.by_status[KeyStatus.VALID_PAID] - start_stats['valid_paid']
+        new_rate_limited = self.stats.by_status[KeyStatus.RATE_LIMITED] - start_stats['rate_limited']
+        new_invalid = self.stats.by_status[KeyStatus.INVALID] - start_stats['invalid']
+        
+        logger.info("=" * 60)
+        logger.info(f"📊 QUERY SUMMARY: {query[:50]}...")
+        logger.info("=" * 60)
+        logger.info(f"⏱️  Duration: {duration:.1f} seconds")
+        logger.info(f"🔑 Keys found in this query:")
+        logger.info(f"   Valid (Free): +{new_valid_free}")
+        logger.info(f"   Valid (Paid): +{new_valid_paid}")
+        logger.info(f"   Rate Limited: +{new_rate_limited}")
+        logger.info(f"   Invalid: +{new_invalid}")
+        logger.info(f"📈 Total keys so far:")
+        logger.info(f"   Valid (Free): {self.stats.by_status[KeyStatus.VALID_FREE]}")
+        logger.info(f"   Valid (Paid): {self.stats.by_status[KeyStatus.VALID_PAID]}")
+        logger.info(f"   Rate Limited: {self.stats.by_status[KeyStatus.RATE_LIMITED]}")
+        logger.info(f"   Invalid: {self.stats.by_status[KeyStatus.INVALID]}")
+        
+        # Token Pool 状态
+        if self.token_pool:
+            pool_status = self.token_pool.get_pool_status()
+            logger.info(f"🎯 Token Pool Status:")
+            logger.info(f"   Total tokens: {pool_status['total_tokens']}")
+            logger.info(f"   Healthy: {pool_status['healthy']}")
+            logger.info(f"   Limited: {pool_status['limited']}")
+            logger.info(f"   Exhausted: {pool_status['exhausted']}")
+            logger.info(f"   Quota remaining: {pool_status['total_remaining']}/{pool_status['total_limit']}")
+            logger.info(f"   Utilization: {pool_status['utilization']}")
+        
+        logger.info("=" * 60)
+    
+    async def _validate_keys_concurrent(self, keys: List[str]) -> List[Any]:
+        """并发验证密钥"""
+        config = get_config_service()
+        max_concurrent = config.get("ASYNC_VALIDATION_CONCURRENCY", 50)
+        
+        # 如果密钥数量较少，直接串行验证
+        if len(keys) <= 5:
+            return self.validator.validate_batch(keys)
+        
+        logger.info(f"⚡ Validating {len(keys)} keys with {min(max_concurrent, len(keys))} concurrent workers")
+        
+        # 创建验证任务
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def validate_with_limit(key):
+            """限制并发的验证"""
+            async with semaphore:
+                # 在线程池中运行同步验证
+                loop = asyncio.get_event_loop()
+                return await loop.run_in_executor(
+                    self._executor,
+                    self.validator.validate_single,
+                    key
+                )
+        
+        # 创建所有验证任务
+        tasks = [validate_with_limit(key) for key in keys]
+        
+        # 并发执行所有验证
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # 过滤掉异常结果
+        valid_results = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"Validation error for key {i}: {result}")
+            else:
+                valid_results.append(result)
+        
+        return valid_results
 
 
 async def main():

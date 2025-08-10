@@ -13,6 +13,8 @@ from typing import List, Optional
 import signal
 from datetime import datetime
 import platform
+import psutil  # 用于系统资源监控
+import multiprocessing
 
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -29,6 +31,7 @@ from app.features.feature_manager import get_feature_manager
 # 导入优化组件
 from utils.security_utils import setup_secure_logging, validate_environment
 from app.core.graceful_shutdown import get_shutdown_manager
+from utils.token_monitor import TokenMonitor, TokenPoolOptimizer
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -75,6 +78,44 @@ def print_banner():
     """
     
     print(banner)
+
+
+def print_system_resources():
+    """打印系统资源信息"""
+    # 获取系统资源信息
+    cpu_count = multiprocessing.cpu_count()
+    cpu_percent = psutil.cpu_percent(interval=1)
+    memory = psutil.virtual_memory()
+    memory_gb = memory.total / (1024**3)
+    memory_used_gb = memory.used / (1024**3)
+    memory_percent = memory.percent
+    
+    # 检查网络连接
+    net_io = psutil.net_io_counters()
+    net_speed = "高速" if net_io.bytes_sent + net_io.bytes_recv > 1000000 else "正常"
+    
+    # GPU信息（如果可用）
+    gpu_status = "未检测到"
+    try:
+        import GPUtil
+        gpus = GPUtil.getGPUs()
+        if gpus:
+            gpu_status = f"{len(gpus)} 个GPU可用"
+    except:
+        pass
+    
+    resource_table = f"""
+    ╔════════════════════════════════════════════════════════════════════════════╗
+    ║                          系统资源状态                                        ║
+    ╠════════════════════════════════════════════════════════════════════════════╣
+    ║  CPU核心数    : {f"{cpu_count} 核":<58} ║
+    ║  CPU使用率    : {f"{cpu_percent:.1f}%":<58} ║
+    ║  内存容量     : {f"{memory_gb:.1f} GB (已用 {memory_used_gb:.1f} GB, {memory_percent:.1f}%)":<58} ║
+    ║  GPU状态      : {gpu_status:<58} ║
+    ║  网络带宽     : {net_speed:<58} ║
+    ╚════════════════════════════════════════════════════════════════════════════╝
+    """
+    print(resource_table)
 
 
 def print_config_info():
@@ -204,6 +245,40 @@ def load_queries(config) -> List[str]:
     return queries
 
 
+async def initialize_token_monitor(config) -> Optional[TokenMonitor]:
+    """
+    初始化Token监控器
+    
+    Args:
+        config: 配置服务
+        
+    Returns:
+        TokenMonitor实例或None
+    """
+    tokens = config.get("GITHUB_TOKENS_LIST", [])
+    if not tokens:
+        logger.warning("⚠️ 没有配置GitHub tokens，跳过token监控")
+        return None
+    
+    logger.info(f"🔍 正在初始化Token监控器，共 {len(tokens)} 个token...")
+    
+    # 创建监控器
+    monitor = TokenMonitor(tokens)
+    await monitor.start()
+    
+    # 检查所有token
+    logger.info("📊 正在检查所有token的配额状态...")
+    await monitor.check_all_tokens()
+    
+    # 显示初始状态
+    from rich.console import Console
+    console = Console()
+    console.print(monitor.get_summary_panel())
+    console.print(monitor.get_status_table())
+    
+    return monitor
+
+
 async def main():
     """主函数"""
     # 打印启动横幅
@@ -211,6 +286,9 @@ async def main():
     
     # 设置日志
     setup_logging()
+    
+    # 打印系统资源信息
+    print_system_resources()
     
     # 打印配置信息
     print_config_info()
@@ -234,6 +312,18 @@ async def main():
     logger.info(f"   ✅ 密钥存储模式: {'明文' if config.get('ALLOW_PLAINTEXT', True) else '加密'}")
     logger.info(f"   ✅ 异步模式: {'启用' if config.get('ENABLE_ASYNC', True) else '禁用'}")
     logger.info("=" * 80)
+    
+    # 初始化Token监控器
+    token_monitor = await initialize_token_monitor(config)
+    
+    # 如果有token监控器，创建优化器
+    token_optimizer = None
+    if token_monitor:
+        token_optimizer = TokenPoolOptimizer(token_monitor)
+        # 根据CPU核心数设置工作线程数
+        worker_count = min(multiprocessing.cpu_count() * 2, len(config.get("GITHUB_TOKENS_LIST", [])))
+        await token_optimizer.start(worker_count)
+        logger.info(f"⚡ Token池优化器已启动，{worker_count} 个工作线程")
     
     # 初始化特性管理器
     feature_manager = get_feature_manager(config.get_all())
@@ -313,6 +403,15 @@ async def main():
         logger.error(f"💥 致命错误: {e}", exc_info=True)
         return 1
     finally:
+        # 清理资源
+        if 'token_optimizer' in locals() and token_optimizer:
+            await token_optimizer.stop()
+            logger.info("✅ Token优化器已停止")
+        
+        if 'token_monitor' in locals() and token_monitor:
+            await token_monitor.stop()
+            logger.info("✅ Token监控器已停止")
+        
         # 清理特性管理器
         if 'feature_manager' in locals():
             feature_manager.cleanup_all()
