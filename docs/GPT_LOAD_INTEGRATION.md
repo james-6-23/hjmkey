@@ -4,6 +4,8 @@
 
 Hajimi King项目现已支持将找到的Gemini API密钥自动同步到GPT Load Balancer系统。这个功能允许您将搜索到的有效密钥自动分发到多个GPT Load组中，实现密钥的集中管理和负载均衡。
 
+**新功能**：智能分组同步机制，可根据密钥类型（有效、429限流、付费版、免费版）自动分配到不同的专属组，实现精细化的资源管理。
+
 ## 功能特点
 
 - ✅ **自动同步**: 找到有效密钥后自动添加到同步队列
@@ -11,22 +13,43 @@ Hajimi King项目现已支持将找到的Gemini API密钥自动同步到GPT Load
 - ✅ **多组支持**: 支持同时发送到多个GPT Load组
 - ✅ **失败重试**: 发送失败的密钥会保留在队列中等待重试
 - ✅ **双系统支持**: 同时支持Gemini Balancer和GPT Load Balancer
+- ✅ **智能分组**: 根据密钥类型自动分配到专属组（新功能）
+- ✅ **资源隔离**: 付费密钥、429密钥、免费密钥分组管理
 
 ## 配置说明
 
-### 1. 环境变量配置
+### 1. 基础配置
 
 在`.env`文件或`data/config.txt`中添加以下配置：
 
 ```env
-# GPT Load Balancer配置
+# GPT Load Balancer基础配置
 GPT_LOAD_SYNC_ENABLED=true                    # 启用GPT Load同步
 GPT_LOAD_URL=https://your-gpt-load-server.com # GPT Load服务器地址
 GPT_LOAD_AUTH=your-bearer-token               # Bearer认证令牌
-GPT_LOAD_GROUP_NAME=group1,group2,group3      # 目标组名（逗号分隔）
+GPT_LOAD_GROUP_NAME=group1,group2,group3      # 目标组名（传统模式使用）
 ```
 
-### 2. 配置文件示例
+### 2. 智能分组配置（推荐）
+
+启用智能分组功能，实现密钥的自动分类和精细化管理：
+
+```env
+# 智能分组配置
+GPT_LOAD_SMART_GROUP_ENABLED=true    # 启用智能分组
+
+# 各类型密钥对应的组名
+GPT_LOAD_GROUP_VALID=production      # 有效密钥组
+GPT_LOAD_GROUP_429=rate_limited      # 429限流密钥专属组
+GPT_LOAD_GROUP_PAID=paid            # 付费版密钥专属组
+GPT_LOAD_GROUP_FREE=free            # 免费版密钥专属组
+
+# 双重同步策略（可选）
+GPT_LOAD_429_TO_VALID=true          # 429密钥也同步到valid组
+GPT_LOAD_PAID_TO_VALID=true         # 付费密钥也同步到valid组
+```
+
+### 3. 配置文件示例
 
 `data/config.txt`:
 ```
@@ -34,14 +57,37 @@ GPT_LOAD_GROUP_NAME=group1,group2,group3      # 目标组名（逗号分隔）
 ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ghp_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
 
-# GPT Load配置
+# GPT Load基础配置
 GPT_LOAD_SYNC_ENABLED=true
 GPT_LOAD_URL=https://api.gptload.com
 GPT_LOAD_AUTH=Bearer_1234567890abcdef
+
+# 传统模式（所有密钥发送到相同组）
 GPT_LOAD_GROUP_NAME=production,staging,development
+
+# 智能分组模式（推荐）
+GPT_LOAD_SMART_GROUP_ENABLED=true
+GPT_LOAD_GROUP_VALID=production
+GPT_LOAD_GROUP_429=rate_limited
+GPT_LOAD_GROUP_PAID=paid_users
+GPT_LOAD_GROUP_FREE=free_users
 ```
 
 ## 工作流程
+
+### 智能分组工作流程
+
+```mermaid
+graph TD
+    A[发现密钥] --> B{密钥类型?}
+    B -->|有效| C[Valid组]
+    B -->|429限流| D[429专属组]
+    B -->|付费版| E[Paid专属组]
+    B -->|免费版| F[Free组]
+    
+    D -->|可选| C
+    E -->|可选| C
+```
 
 ### 1. 实时同步模式
 
@@ -145,19 +191,33 @@ Content-Type: application/json
 ### 成功同步示例
 
 ```
+# 传统模式
 ✅ VALID: AIzaSyABC...
 🔄 添加密钥到GPT Load同步队列: AIzaSyABC...
 ⚠️ RATE LIMITED: AIzaSyXYZ...
 🔄 添加429密钥到GPT Load同步队列: AIzaSyXYZ...
-📥 Added 10 key(s) to GPT load balancer queue (total: 25)
 
-批量同步时：
-🔄 批量同步密钥到GPT Load...
-   ✅ 有效密钥: 15 个
-   ⚠️ 429密钥: 10 个
-   📊 总计: 25 个
-🔄 Sending 25 key(s) to GPT load balancer for 3 group(s)...
-✅ Successfully sent keys to all 3 group(s)
+# 智能分组模式
+✅ VALID: AIzaSyABC...
+🏷️ 标记为有效密钥: AIzaSyABC...
+⚠️ RATE LIMITED: AIzaSyXYZ...
+🏷️ 标记为429限流密钥: AIzaSyXYZ...
+💎 PAID VERSION: AIzaSyDEF...
+🏷️ 标记为付费版密钥: AIzaSyDEF...
+
+# 批量同步（智能分组）
+🤖 使用智能分组模式批量同步密钥...
+📤 同步 15 个密钥到组 'production'
+   ✅ 成功添加到 'production' 组队列
+📤 同步 10 个密钥到组 'rate_limited'
+   ✅ 成功添加到 'rate_limited' 组队列
+📤 同步 3 个密钥到组 'paid'
+   ✅ 成功添加到 'paid' 组队列
+📊 智能同步统计:
+   production: 15 个密钥
+   rate_limited: 10 个密钥
+   paid: 3 个密钥
+   总计: 28 个密钥
 ```
 
 ### 失败处理示例
