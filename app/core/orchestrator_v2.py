@@ -193,54 +193,42 @@ class OrchestratorV2:
         return self.stats
     
     async def _process_queries(self, queries: List[str]):
-        """并发处理查询列表"""
-        # 获取配置
-        config = get_config_service()
-        max_concurrent = config.get("MAX_CONCURRENT_SEARCHES", 5)
-        
+        """串行处理查询列表（一个接一个）"""
         # 过滤未处理的查询
         pending_queries = []
         for query in queries:
             if self.scanner.should_skip_query(query):
-                logger.info(f"⏭️ Skipping processed query: {query}")
+                logger.info(f"⏭️ 跳过已处理的查询: {query}")
             else:
                 pending_queries.append(query)
         
         if not pending_queries:
-            logger.info("✅ All queries already processed")
+            logger.info("✅ 所有查询已处理完成")
             return
         
-        logger.info(f"🚀 Processing {len(pending_queries)} queries with {max_concurrent} concurrent workers")
+        logger.info(f"📋 待处理查询数: {len(pending_queries)}")
+        logger.info("=" * 60)
         
-        # 创建任务队列
-        tasks = []
-        semaphore = asyncio.Semaphore(max_concurrent)
-        
-        async def process_with_semaphore(query):
-            """使用信号量限制并发"""
-            async with semaphore:
-                if not self.running or self.shutdown_manager.is_shutdown_requested():
-                    return
-                
-                try:
-                    await self._process_single_query(query)
-                    self.stats.mark_query_complete(success=True)
-                except Exception as e:
-                    logger.error(f"❌ Query failed: {query} - {e}")
-                    self.stats.mark_query_complete(success=False)
-                    self.stats.add_error("query_error", str(e), {"query": query})
-        
-        # 创建所有任务
-        for query in pending_queries:
-            task = asyncio.create_task(process_with_semaphore(query))
-            tasks.append(task)
-        
-        # 等待所有任务完成
-        await asyncio.gather(*tasks, return_exceptions=True)
+        # 串行处理每个查询（一个接一个）
+        for i, query in enumerate(pending_queries, 1):
+            if not self.running or self.shutdown_manager.is_shutdown_requested():
+                break
+            
+            logger.info(f"🔍 [{i}/{len(pending_queries)}] 开始处理查询: {query}")
+            logger.info("-" * 60)
+            
+            try:
+                await self._process_single_query(query)
+                self.stats.mark_query_complete(success=True)
+            except Exception as e:
+                logger.error(f"❌ 查询失败: {query} - {e}")
+                self.stats.mark_query_complete(success=False)
+                self.stats.add_error("query_error", str(e), {"query": query})
+            
+            logger.info("=" * 60)
     
     async def _process_single_query(self, query: str):
         """处理单个查询"""
-        logger.info(f"🔍 Processing query: {query}")
         query_start_time = time.time()
         
         if not self.github_client or not self.token_pool:
@@ -261,8 +249,8 @@ class OrchestratorV2:
             logger.error("❌ No available tokens")
             return
         
-        # 使用脱敏日志
-        logger.info(f"🔑 Using token: {mask_key(token)}")
+        # 不需要每次都显示token信息
+        logger.debug(f"使用Token: {mask_key(token)}")
         
         # 执行搜索（这里需要修改 GitHubClient 来支持单个 token）
         # 暂时使用原有方式
@@ -278,14 +266,15 @@ class OrchestratorV2:
         })
         
         if not search_result or not search_result.get("items"):
-            logger.info(f"📭 No items found for query: {query}")
+            logger.info(f"📭 未找到任何结果")
             return
         
         items = search_result["items"]
-        logger.info(f"📦 Found {len(items)} items")
+        logger.info(f"📦 找到 {len(items)} 个文件")
         
         # 转换到验证状态
-        self.state_machine.transition_to(OrchestratorState.VALIDATING)
+        if self.state_machine.state != OrchestratorState.VALIDATING:
+            self.state_machine.transition_to(OrchestratorState.VALIDATING)
         
         # 处理项目
         for item in items:
@@ -297,8 +286,9 @@ class OrchestratorV2:
         # 标记查询完成
         self.scanner.filter.add_processed_query(query)
         
-        # 转回扫描状态
-        self.state_machine.transition_to(OrchestratorState.SCANNING)
+        # 转回扫描状态（只有在不是FINALIZING时才转换）
+        if self.state_machine.state != OrchestratorState.FINALIZING:
+            self.state_machine.transition_to(OrchestratorState.SCANNING)
         
         # 显示查询完成后的统计
         self._log_query_summary(query, start_stats, time.time() - query_start_time)
@@ -558,44 +548,8 @@ class OrchestratorV2:
     
     async def _validate_keys_concurrent(self, keys: List[str]) -> List[Any]:
         """并发验证密钥"""
-        config = get_config_service()
-        max_concurrent = config.get("ASYNC_VALIDATION_CONCURRENCY", 50)
-        
-        # 如果密钥数量较少，直接串行验证
-        if len(keys) <= 5:
-            return self.validator.validate_batch(keys)
-        
-        logger.info(f"⚡ Validating {len(keys)} keys with {min(max_concurrent, len(keys))} concurrent workers")
-        
-        # 创建验证任务
-        semaphore = asyncio.Semaphore(max_concurrent)
-        
-        async def validate_with_limit(key):
-            """限制并发的验证"""
-            async with semaphore:
-                # 在线程池中运行同步验证
-                loop = asyncio.get_event_loop()
-                return await loop.run_in_executor(
-                    self._executor,
-                    self.validator.validate_single,
-                    key
-                )
-        
-        # 创建所有验证任务
-        tasks = [validate_with_limit(key) for key in keys]
-        
-        # 并发执行所有验证
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # 过滤掉异常结果
-        valid_results = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                logger.error(f"Validation error for key {i}: {result}")
-            else:
-                valid_results.append(result)
-        
-        return valid_results
+        # 直接使用批量验证（内部已经优化）
+        return self.validator.validate_batch(keys)
 
 
 async def main():
