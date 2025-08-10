@@ -236,7 +236,7 @@ async def main():
     logger.info("=" * 80)
     
     # 初始化特性管理器
-    feature_manager = get_feature_manager(config.to_dict())
+    feature_manager = get_feature_manager(config.get_all())
     feature_manager.initialize_all_features()
     logger.info("✅ 功能模块初始化完成")
     
