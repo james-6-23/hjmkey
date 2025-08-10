@@ -11,13 +11,16 @@ import os
 from pathlib import Path
 from typing import List, Optional
 import signal
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import platform
 import psutil  # 用于系统资源监控
 import multiprocessing
 
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# 定义北京时区
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 # 导入配置服务
 from app.services.config_service import get_config_service
@@ -53,8 +56,8 @@ def print_banner():
     ╚═╝  ╚═╝╚═╝  ╚═╝ ╚════╝ ╚═╝╚═╝     ╚═╝╚═╝    ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝ ╚═════╝ 
     """
     
-    # 获取当前时间戳
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 获取当前时间戳（北京时间）
+    timestamp = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
     
     # 获取配置信息
     config = get_config_service()
@@ -168,12 +171,30 @@ def setup_logging():
     log_level = config.get("LOG_LEVEL", "INFO")
     log_format = config.get("LOG_FORMAT", "text")
     
+    # 自定义格式化器，使用北京时间
+    class BeijingFormatter(logging.Formatter):
+        def formatTime(self, record, datefmt=None):
+            # 转换为北京时间
+            dt = datetime.fromtimestamp(record.created, BEIJING_TZ)
+            if datefmt:
+                return dt.strftime(datefmt)
+            else:
+                return dt.strftime('%Y-%m-%d %H:%M:%S')
+    
     # 基础配置
     logging.basicConfig(
         level=getattr(logging, log_level.upper()),
         format='%(asctime)s | %(levelname)s | %(name)s | %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+    
+    # 应用北京时间格式化器到所有处理器
+    formatter = BeijingFormatter(
+        '%(asctime)s | %(levelname)s | %(name)s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    for handler in logging.root.handlers:
+        handler.setFormatter(formatter)
     
     # 设置安全日志（自动脱敏）
     setup_secure_logging()
@@ -184,8 +205,10 @@ def setup_logging():
         
         class JSONFormatter(logging.Formatter):
             def format(self, record):
+                # 使用北京时间
+                beijing_time = datetime.now(BEIJING_TZ)
                 log_obj = {
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": beijing_time.isoformat(),
                     "level": record.levelname,
                     "logger": record.name,
                     "message": record.getMessage(),
@@ -193,7 +216,7 @@ def setup_logging():
                     "function": record.funcName,
                     "line": record.lineno
                 }
-                return json.dumps(log_obj)
+                return json.dumps(log_obj, ensure_ascii=False)
         
         # 应用到所有处理器
         for handler in logging.root.handlers:

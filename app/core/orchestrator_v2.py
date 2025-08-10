@@ -81,11 +81,8 @@ class OrchestratorV2:
         self.writer = AtomicFileWriter()
         self.artifact_manager = RunArtifactManager(self.path_manager)
         
-        # 初始化安全存储
-        self.secure_storage = SecureKeyStorage(
-            self.path_manager.current_run_dir,
-            allow_plaintext=get_config_service().get("ALLOW_PLAINTEXT", False)
-        )
+        # 简化：直接使用明文存储（日志中脱敏即可）
+        self.secure_storage = None  # 不再使用复杂的加密存储
         
         # 初始化扫描器和验证器
         self.scanner = scanner or Scanner()
@@ -487,9 +484,9 @@ class OrchestratorV2:
 
 
     def _save_key_to_file(self, key: str, status: KeyStatus):
-        """实时保存密钥到文件"""
+        """实时保存密钥到TXT文件（明文）"""
         try:
-            # 确定文件路径
+            # 确定文件路径 - 直接保存在data目录下，方便访问
             if status == KeyStatus.VALID_FREE:
                 filename = "keys_valid_free.txt"
             elif status == KeyStatus.VALID_PAID:
@@ -501,18 +498,27 @@ class OrchestratorV2:
             else:
                 return
             
-            # 构建完整路径
-            file_path = self.path_manager.current_run_dir / "secrets" / filename
-            file_path.parent.mkdir(parents=True, exist_ok=True)
+            # 构建路径 - 保存在 data/keys/ 目录下
+            keys_dir = self.path_manager.data_root / "keys"
+            keys_dir.mkdir(parents=True, exist_ok=True)
+            file_path = keys_dir / filename
             
-            # 追加写入密钥
-            with open(file_path, 'a', encoding='utf-8') as f:
-                f.write(f"{key}\n")
+            # 同时保存到运行目录（用于记录）
+            run_file_path = self.path_manager.current_run_dir / "keys" / filename
+            run_file_path.parent.mkdir(parents=True, exist_ok=True)
             
-            logger.debug(f"💾 Key saved to {filename}")
+            # 追加写入密钥（明文）
+            for path in [file_path, run_file_path]:
+                with open(path, 'a', encoding='utf-8') as f:
+                    f.write(f"{key}\n")
+                    f.flush()  # 立即刷新到磁盘
+            
+            # 日志中显示脱敏版本
+            masked_key = mask_key(key)
+            logger.info(f"💾 密钥已保存到 {filename}: {masked_key}")
             
         except Exception as e:
-            logger.error(f"Failed to save key to file: {e}")
+            logger.error(f"保存密钥失败: {e}")
     
     def _log_query_summary(self, query: str, start_stats: Dict, duration: float):
         """记录查询完成后的摘要"""
