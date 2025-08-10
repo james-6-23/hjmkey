@@ -198,15 +198,15 @@ class OrchestratorV2:
         pending_queries = []
         for query in queries:
             if self.scanner.should_skip_query(query):
-                logger.info(f"⏭️ 跳过已处理的查询: {query}")
+                logger.info(f"⏭️ Skipping processed query: {query}")
             else:
                 pending_queries.append(query)
         
         if not pending_queries:
-            logger.info("✅ 所有查询已处理完成")
+            logger.info("✅ All queries completed")
             return
         
-        logger.info(f"📋 待处理查询数: {len(pending_queries)}")
+        logger.info(f"📋 Pending queries: {len(pending_queries)}")
         logger.info("=" * 60)
         
         # 串行处理每个查询（一个接一个）
@@ -214,14 +214,14 @@ class OrchestratorV2:
             if not self.running or self.shutdown_manager.is_shutdown_requested():
                 break
             
-            logger.info(f"🔍 [{i}/{len(pending_queries)}] 开始处理查询: {query}")
+            logger.info(f"🔍 [{i}/{len(pending_queries)}] Processing query: {query}")
             logger.info("-" * 60)
             
             try:
                 await self._process_single_query(query)
                 self.stats.mark_query_complete(success=True)
             except Exception as e:
-                logger.error(f"❌ 查询失败: {query} - {e}")
+                logger.error(f"❌ Query failed: {query} - {e}")
                 self.stats.mark_query_complete(success=False)
                 self.stats.add_error("query_error", str(e), {"query": query})
             
@@ -250,7 +250,7 @@ class OrchestratorV2:
             return
         
         # 不需要每次都显示token信息
-        logger.debug(f"使用Token: {mask_key(token)}")
+        logger.debug(f"Using token: {mask_key(token)}")
         
         # 执行搜索（这里需要修改 GitHubClient 来支持单个 token）
         # 暂时使用原有方式
@@ -266,11 +266,11 @@ class OrchestratorV2:
         })
         
         if not search_result or not search_result.get("items"):
-            logger.info(f"📭 未找到任何结果")
+            logger.info(f"📭 No results found")
             return
         
         items = search_result["items"]
-        logger.info(f"📦 找到 {len(items)} 个文件")
+        logger.info(f"📦 Found {len(items)} files")
         
         # 转换到验证状态
         if self.state_machine.state != OrchestratorState.VALIDATING:
@@ -505,10 +505,10 @@ class OrchestratorV2:
             
             # 日志中显示脱敏版本
             masked_key = mask_key(key)
-            logger.info(f"💾 密钥已保存到 {filename}: {masked_key}")
+            logger.info(f"💾 Key saved to {filename}: {masked_key}")
             
         except Exception as e:
-            logger.error(f"保存密钥失败: {e}")
+            logger.error(f"Failed to save key: {e}")
     
     def _log_query_summary(self, query: str, start_stats: Dict, duration: float):
         """记录查询完成后的摘要"""
