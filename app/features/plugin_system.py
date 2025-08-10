@@ -443,6 +443,25 @@ class PluginSystemFeature(Feature):
         返回降级实现
         """
         return FallbackPluginSystem()
+
+
+class FallbackPluginSystem:
+    """插件系统功能的降级实现"""
+    
+    def __init__(self):
+        logger.info("🔄 使用插件系统功能的降级实现")
+    
+    def start_background_tasks(self):
+        """降级的后台任务启动"""
+        logger.debug("🔄 插件系统后台任务已降级")
+    
+    def is_healthy(self) -> bool:
+        """降级的健康检查"""
+        return True  # 降级实现总是"健康"
+    
+    def cleanup(self):
+        """降级的资源清理"""
+        logger.debug("🧹 插件系统资源清理已降级")
     
     def cleanup(self):
         """清理资源"""
