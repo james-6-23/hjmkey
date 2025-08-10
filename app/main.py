@@ -8,7 +8,8 @@ import asyncio
 import logging
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
+import os
 
 # 添加项目根目录到Python路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -19,6 +20,14 @@ from app.core.scanner import Scanner, ScanFilter
 from app.core.validator import KeyValidatorFactory
 from app.services.config_service import ConfigService
 from app.services.interfaces import IConfigService
+
+# 导入模块化功能
+try:
+    from app.features.feature_manager import get_feature_manager, FeatureManager
+    FEATURES_AVAILABLE = True
+except ImportError:
+    FEATURES_AVAILABLE = False
+    print("⚠️  模块化功能不可用，使用基础功能")
 
 # 配置日志
 logging.basicConfig(
@@ -41,6 +50,7 @@ class Application:
         self.container: Optional[DIContainer] = None
         self.config_service: Optional[IConfigService] = None
         self.orchestrator: Optional[Orchestrator] = None
+        self.feature_manager: Optional[FeatureManager] = None
         
     def setup(self) -> None:
         """
@@ -66,10 +76,22 @@ class Application:
         # 4. 确保数据目录存在
         self.config_service.ensure_data_dirs()
         
-        # 5. 显示配置信息
+        # 5. 初始化特性管理器（如果可用）
+        if FEATURES_AVAILABLE:
+            try:
+                self.feature_manager = get_feature_manager()
+                self.feature_manager.initialize_all_features()
+                logger.info("✅ Feature manager initialized")
+            except Exception as e:
+                logger.error(f"❌ Feature manager initialization failed: {e}")
+                self.feature_manager = None
+        else:
+            logger.info("⏭️  Feature manager not available, skipping initialization")
+        
+        # 6. 显示配置信息
         self._display_config()
         
-        # 6. 设置组件
+        # 7. 设置组件
         self._setup_components()
         
         logger.info("✅ Application setup complete")
@@ -230,6 +252,14 @@ AIzaSy in:file filename:config
     async def cleanup(self) -> None:
         """清理资源"""
         logger.info("🧹 Cleaning up resources...")
+        
+        # 清理特性管理器
+        if self.feature_manager:
+            try:
+                self.feature_manager.cleanup_all()
+                logger.info("✅ Feature manager cleanup complete")
+            except Exception as e:
+                logger.error(f"❌ Feature manager cleanup failed: {e}")
         
         # 停止协调器
         if self.orchestrator:

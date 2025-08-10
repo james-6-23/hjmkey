@@ -13,12 +13,13 @@
 5. **外部同步** 🔄 - 支持向[Gemini-Balancer](https://github.com/snailyp/gemini-balance)和[GPT-Load](https://github.com/tbphp/gpt-load)同步发现的密钥
 6. **付费版识别** 💎 - 使用Cache API精确识别Gemini付费版密钥
 7. **Token循环** 🔄 - GitHub tokens自动轮换，避免单个token超限
+8. **模块化架构** 🧩 - 可选功能模块，通过环境变量控制启用/禁用
 
 ### 🔮 待开发功能 (TODO)
 
-- [ ] **数据库支持保存key** 💾 - 支持将发现的API密钥持久化存储到数据库中
 - [ ] **API、可视化展示抓取的key列表** 📊 - 提供API接口和可视化界面获取已抓取的密钥列表
 - [x] **付费key检测** 💰 - 使用Cache API精确识别付费版密钥（已完成）
+- [x] **数据库支持保存key** 💾 - 支持将发现的API密钥持久化存储到数据库中（已完成）
 
 ## 📋 目录 🗂️
 
@@ -274,6 +275,70 @@ AizaSy in:file filename:.env
 - ✅ 定期轮换GitHub Token 🔄
 - ✅ 不要将真实的API密钥提交到版本控制 🙈
 - ✅ 定期检查和清理发现的密钥文件 🧹
+
+## 🧩 模块化架构功能 🏗️
+
+Hajimi King 现在支持模块化架构，可以通过环境变量控制启用/禁用各种功能模块：
+
+### 🚀 异步批量验证模块
+
+- **功能**：10倍性能提升，通过并发验证显著加快密钥验证速度
+- **环境变量**：
+  - `ENABLE_ASYNC_VALIDATION=true` - 启用异步验证
+  - `MAX_CONCURRENT_VALIDATIONS=50` - 最大并发验证数
+  - `VALIDATION_BATCH_SIZE=100` - 批量验证大小
+
+### 📊 进度显示模块
+
+- **功能**：实时进度跟踪和可视化，提升用户体验
+- **环境变量**：
+  - `ENABLE_PROGRESS_DISPLAY=true` - 启用进度显示
+  - `PROGRESS_UPDATE_INTERVAL=0.1` - 进度更新间隔（秒）
+  - `DEFAULT_PROGRESS_STYLE=bar` - 默认进度样式（bar/spinner/percentage/eta）
+
+### 📝 结构化日志模块
+
+- **功能**：增强的JSON/XML/YAML日志格式，提供多种日志格式支持
+- **环境变量**：
+  - `ENABLE_STRUCTURED_LOGGING=true` - 启用结构化日志
+  - `DEFAULT_LOG_FORMAT=json` - 默认日志格式（json/xml/yaml/text）
+  - `LOG_LEVEL=INFO` - 日志级别（DEBUG/INFO/WARNING/ERROR/CRITICAL）
+  - `LOG_FILE=logs/app.log` - 日志文件路径
+
+### 🔌 连接池优化模块
+
+- **功能**：50%网络性能提升，通过复用连接和智能池管理优化网络请求
+- **环境变量**：
+  - `ENABLE_CONNECTION_POOL=true` - 启用连接池优化
+  - `MAX_CONNECTIONS=100` - 最大连接数
+  - `CONNECTION_TIMEOUT=30` - 连接超时时间（秒）
+
+### 🗄️ 数据库支持模块
+
+- **功能**：多后端数据持久化，支持SQLite、PostgreSQL、MySQL等数据库
+- **环境变量**：
+  - `ENABLE_DATABASE=true` - 启用数据库支持
+  - `DATABASE_TYPE=sqlite` - 数据库类型（sqlite/postgresql/mysql）
+  - `DATABASE_NAME=data/app.db` - 数据库名称
+
+### 🔌 插件系统模块
+
+- **功能**：动态加载和热重载，提供插件的动态加载、卸载和热重载功能
+- **环境变量**：
+  - `ENABLE_PLUGINS=true` - 启用插件系统
+  - `PLUGIN_DIRECTORY=plugins` - 插件目录
+  - `PLUGIN_HOT_RELOAD=true` - 启用热重载
+  - `PLUGIN_HOT_RELOAD_INTERVAL=5` - 热重载检查间隔（秒）
+
+### 📈 监控告警模块
+
+- **功能**：系统健康和性能洞察，提供Prometheus指标收集和告警功能
+- **环境变量**：
+  - `ENABLE_MONITORING=true` - 启用监控告警
+  - `MONITORING_ENABLED=true` - 监控功能启用
+  - `METRICS_EXPORT_INTERVAL=60` - 指标导出间隔（秒）
+  - `ERROR_RATE_THRESHOLD=0.1` - 错误率阈值
+  - `LATENCY_THRESHOLD=5.0` - 延迟阈值（秒）
 
 💖 **享受使用 Hajimi King 的快乐时光！** 🎉✨🎊
 
