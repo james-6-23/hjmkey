@@ -20,7 +20,7 @@ from app.core.scanner import Scanner, ScanResult, ScanFilter
 from app.core.validator import KeyValidator, ValidationResult, ValidationStatus
 from app.core.container import inject
 from app.services.config_service import get_config_service
-from utils.github_client import GitHubClient
+from utils.github_client_v2 import create_github_client_v2
 
 logger = logging.getLogger(__name__)
 
@@ -105,8 +105,8 @@ class Orchestrator:
         config_service = get_config_service()
         tokens = config_service.get("GITHUB_TOKENS_LIST", [])
         if tokens:
-            self.github_client = GitHubClient(tokens)
-            logger.info(f"✅ GitHub客户端初始化成功，使用 {len(tokens)} 个tokens")
+            self.github_client = create_github_client_v2(tokens, strategy="ADAPTIVE")
+            logger.info(f"✅ GitHub客户端 V2 初始化成功，使用 {len(tokens)} 个tokens")
         else:
             self.github_client = None
             logger.warning("⚠️ 没有可用的GitHub tokens，搜索功能将无法使用")

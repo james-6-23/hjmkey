@@ -32,7 +32,7 @@ from utils.security_utils import (
     validate_environment
 )
 from utils.token_pool import TokenPool, TokenSelectionStrategy
-from utils.github_client import GitHubClient
+from utils.github_client_v2 import create_github_client_v2
 from app.services.config_service import get_config_service
 
 logger = logging.getLogger(__name__)
@@ -110,16 +110,11 @@ class OrchestratorV2:
         if not tokens:
             logger.warning("⚠️ No GitHub tokens available")
             self.github_client = None
-            self.token_pool = None
             return
-        
-        # 创建 TokenPool
+
+        # 创建增强的 GitHub 客户端 V2 (内置TokenPool)
         strategy = config_service.get("TOKEN_POOL_STRATEGY", "ADAPTIVE")
-        strategy_enum = TokenSelectionStrategy[strategy.upper()]
-        self.token_pool = TokenPool(tokens, strategy=strategy_enum)
-        
-        # 创建增强的 GitHub 客户端（稍后实现）
-        self.github_client = GitHubClient(tokens)
+        self.github_client = create_github_client_v2(tokens, strategy=strategy)
         
         logger.info(f"✅ GitHub client initialized with {len(tokens)} tokens")
         logger.info(f"   Token pool strategy: {strategy}")
@@ -231,7 +226,7 @@ class OrchestratorV2:
         """处理单个查询"""
         query_start_time = time.time()
         
-        if not self.github_client or not self.token_pool:
+        if not self.github_client:
             logger.error("❌ GitHub client not initialized")
             return
         
@@ -243,35 +238,10 @@ class OrchestratorV2:
             'invalid': self.stats.by_status[KeyStatus.INVALID]
         }
         
-        # 从 TokenPool 获取令牌
-        token = self.token_pool.select_token()
-        if not token:
-            logger.error("❌ No available tokens")
-            return
-        
-        # 不需要每次都显示token信息
-        logger.debug(f"Using token: {mask_key(token)}")
-        
-        # 执行搜索（这里需要修改 GitHubClient 来支持单个 token）
-        # 暂时使用原有方式
+        # 执行搜索 - V2版本已经内置TokenPool管理
         start_time = time.time()
         search_result = self.github_client.search_for_keys(query)
         response_time = time.time() - start_time
-        
-        # 更新 TokenPool 状态
-        # 注意：由于当前GitHubClient不返回headers，我们需要手动减少配额
-        if search_result:
-            # 成功请求，减少配额
-            metrics = self.token_pool.metrics.get(token)
-            if metrics:
-                # 每次搜索消耗1个配额
-                metrics.remaining = max(0, metrics.remaining - 1)
-                metrics.record_success(response_time)
-        else:
-            # 失败请求
-            metrics = self.token_pool.metrics.get(token)
-            if metrics:
-                metrics.record_failure("Search failed")
         
         if not search_result or not search_result.get("items"):
             logger.info(f"📭 No results found")
@@ -394,8 +364,8 @@ class OrchestratorV2:
         try:
             # 获取token pool状态，但需要处理不可序列化的对象
             token_pool_status = None
-            if self.token_pool:
-                pool_status = self.token_pool.get_pool_status()
+            if self.github_client and hasattr(self.github_client, 'token_pool'):
+                pool_status = self.github_client.token_pool.get_pool_status()
                 # 转换strategy_usage中的枚举为字符串
                 if 'strategy_usage' in pool_status:
                     pool_status['strategy_usage'] = {
@@ -428,8 +398,8 @@ class OrchestratorV2:
             self._executor.shutdown(wait=False)
         
         # 保存 TokenPool 状态
-        if self.token_pool:
-            pool_status = self.token_pool.get_pool_status()
+        if self.github_client and hasattr(self.github_client, 'token_pool'):
+            pool_status = self.github_client.token_pool.get_pool_status()
             # 转换枚举为字符串以便序列化
             if 'strategy_usage' in pool_status:
                 pool_status['strategy_usage'] = {
@@ -498,11 +468,11 @@ class OrchestratorV2:
         logger.info("=" * 60)
         
         # TokenPool 统计
-        if self.token_pool:
-            pool_status = self.token_pool.get_pool_status()
+        if self.github_client and hasattr(self.github_client, 'token_pool'):
+            pool_status = self.github_client.token_pool.get_pool_status()
             used_quota = pool_status['total_limit'] - pool_status['total_remaining']
             utilization_pct = (used_quota / pool_status['total_limit'] * 100) if pool_status['total_limit'] > 0 else 0
-            
+
             logger.info("📊 Token池统计")
             logger.info(f"Total tokens: {pool_status['total_tokens']}")
             logger.info(f"Healthy/Limited/Exhausted: {pool_status['healthy']}/{pool_status['limited']}/{pool_status['exhausted']}")
@@ -570,9 +540,9 @@ class OrchestratorV2:
         logger.info(f"   Rate Limited: {self.stats.by_status[KeyStatus.RATE_LIMITED]}")
         logger.info(f"   Invalid: {self.stats.by_status[KeyStatus.INVALID]}")
         
-        # Token Pool 状态
-        if self.token_pool:
-            pool_status = self.token_pool.get_pool_status()
+        # Token Pool 状态 - 从GitHub客户端获取
+        if self.github_client and hasattr(self.github_client, 'token_pool'):
+            pool_status = self.github_client.token_pool.get_pool_status()
             # 计算实际使用的配额
             used_quota = pool_status['total_limit'] - pool_status['total_remaining']
             utilization_pct = (used_quota / pool_status['total_limit'] * 100) if pool_status['total_limit'] > 0 else 0

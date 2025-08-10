@@ -14,12 +14,12 @@ from common.Logger import logger
 
 sys.path.append('../')
 from common.config import Config
-from utils.github_client import GitHubClient
+from utils.github_client_v2 import create_github_client_v2
 from utils.file_manager import file_manager, Checkpoint, checkpoint
 from utils.sync_utils import sync_utils
 
 # 创建GitHub工具实例和文件管理器
-github_utils = GitHubClient.create_instance(Config.GITHUB_TOKENS)
+github_utils = create_github_client_v2(Config.GITHUB_TOKENS, strategy="ADAPTIVE")
 
 # 统计信息
 skip_stats = {

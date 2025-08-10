@@ -8,7 +8,7 @@ from pathlib import Path
 # 添加项目根目录到Python路径
 sys.path.insert(0, str(Path(__file__).parent))
 
-from utils.github_client import GitHubClient
+from utils.github_client_v2 import create_github_client_v2
 from app.services.config_service import ConfigService
 
 def test_github_search():
@@ -25,9 +25,9 @@ def test_github_search():
     
     print(f"✅ 加载了 {len(tokens)} 个tokens")
     
-    # 2. 创建GitHub客户端
-    github_client = GitHubClient(tokens)
-    print("✅ GitHub客户端初始化成功")
+    # 2. 创建GitHub客户端 V2
+    github_client = create_github_client_v2(tokens, strategy="ADAPTIVE")
+    print("✅ GitHub客户端 V2 初始化成功")
     
     # 3. 执行一个简单的搜索测试
     test_query = "AIzaSy in:file filename:.env"
