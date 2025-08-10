@@ -179,8 +179,12 @@ class ProgressDisplayFeature(Feature):
         
         # 启动刷新任务
         self.refresh_task = None
+        self._refresh_thread = None
         if self.enabled:
-            self.refresh_task = asyncio.create_task(self._refresh_display())
+            # 使用线程而不是异步任务来避免事件循环问题
+            import threading
+            self._refresh_thread = threading.Thread(target=self._run_refresh_loop, daemon=True)
+            self._refresh_thread.start()
         
         logger.info("📊 进度显示功能初始化")
         logger.info(f"  样式: {self.default_style.value}")
@@ -195,7 +199,7 @@ class ProgressDisplayFeature(Feature):
         """
         try:
             # 简单的健康检查
-            return self.enabled and (self.refresh_task is None or not self.refresh_task.done())
+            return self.enabled and (self._refresh_thread is None or self._refresh_thread.is_alive())
         except Exception as e:
             logger.error(f"进度显示功能健康检查失败: {e}")
             return False
@@ -208,19 +212,19 @@ class ProgressDisplayFeature(Feature):
     
     def cleanup(self):
         """清理资源"""
-        if self.refresh_task and not self.refresh_task.done():
-            self.refresh_task.cancel()
+        self.enabled = False  # 停止刷新循环
+        if self._refresh_thread and self._refresh_thread.is_alive():
+            self._refresh_thread.join(timeout=1)
         logger.debug("进度显示功能资源已清理")
     
-    async def _refresh_display(self):
-        """定期刷新显示"""
-        while True:
+    def _run_refresh_loop(self):
+        """在独立线程中运行刷新循环"""
+        import time
+        while self.enabled:
             try:
-                await asyncio.sleep(1.0 / self.refresh_rate)
+                time.sleep(1.0 / self.refresh_rate)
                 if self.enabled:
                     self._update_display()
-            except asyncio.CancelledError:
-                break
             except Exception as e:
                 logger.error(f"进度显示刷新失败: {e}")
     

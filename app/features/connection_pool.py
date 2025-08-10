@@ -170,7 +170,18 @@ class ConnectionPoolFeature(Feature):
     def cleanup(self):
         """清理资源"""
         if hasattr(self, 'pool_manager'):
-            asyncio.create_task(self.pool_manager.close_all())
+            # 在同步上下文中处理异步清理
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # 如果事件循环正在运行，创建任务
+                    asyncio.create_task(self.pool_manager.close_all())
+                else:
+                    # 如果没有运行的事件循环，同步运行
+                    loop.run_until_complete(self.pool_manager.close_all())
+            except RuntimeError:
+                # 如果没有事件循环，创建一个新的
+                asyncio.run(self.pool_manager.close_all())
         logger.debug("连接池功能资源清理任务已启动")
     
     @asynccontextmanager

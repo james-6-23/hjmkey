@@ -6,6 +6,7 @@ services:
     container_name: hajimi-king
     restart: unless-stopped
     network_mode: host
+    
     # 环境变量
     env_file:
       - .env
@@ -13,3 +14,100 @@ services:
     # 数据卷挂载
     volumes:
       - ./data:/app/data
+      - ./plugins:/app/plugins
+    
+    # 环境变量（可选，用于覆盖.env中的配置）
+    # environment:
+    #   # 模块化功能配置示例
+    #   - ENABLE_ASYNC_VALIDATION=true
+    #   - ENABLE_PROGRESS_DISPLAY=true
+    #   - ENABLE_STRUCTURED_LOGGING=true
+    #   - ENABLE_CONNECTION_POOL=true
+    #   - ENABLE_DATABASE=true
+    #   - ENABLE_PLUGINS=true
+    #   - ENABLE_MONITORING=true
+    #
+    #   # 异步验证模块配置
+    #   - MAX_CONCURRENT_VALIDATIONS=50
+    #   - VALIDATION_BATCH_SIZE=100
+    #   - VALIDATION_TIMEOUT=30
+    #
+    #   # 进度显示模块配置
+    #   - PROGRESS_UPDATE_INTERVAL=0.1
+    #   - DEFAULT_PROGRESS_STYLE=bar
+    #
+    #   # 结构化日志模块配置
+    #   - DEFAULT_LOG_FORMAT=json
+    #   - LOG_LEVEL=INFO
+    #   - LOG_FILE=logs/app.log
+    #
+    #   # 连接池优化模块配置
+    #   - MAX_CONNECTIONS=100
+    #   - CONNECTION_TIMEOUT=30
+    #
+    #   # 数据库支持模块配置
+    #   - DATABASE_TYPE=sqlite
+    #   - DATABASE_NAME=data/app.db
+    #   - DATABASE_POOL_SIZE=10
+    #
+    #   # 插件系统模块配置
+    #   - PLUGIN_DIRECTORY=plugins
+    #   - PLUGIN_HOT_RELOAD=true
+    #   - PLUGIN_HOT_RELOAD_INTERVAL=5
+    #
+    #   # 监控告警模块配置
+    #   - MONITORING_ENABLED=true
+    #   - METRICS_EXPORT_INTERVAL=60
+    #   - ALERT_CHECK_INTERVAL=30
+    #   - ERROR_RATE_THRESHOLD=0.1
+    #   - LATENCY_THRESHOLD=5.0
+    
+    # 健康检查
+    # healthcheck:
+    #   test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 60s
+
+  # 可选的数据库服务（如果启用数据库模块）
+  # hajimi-king-db:
+  #   image: postgres:15
+  #   container_name: hajimi-king-db
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_DB: hajimi_king
+  #     POSTGRES_USER: hajimi
+  #     POSTGRES_PASSWORD: hajimi_password
+  #   volumes:
+  #     - ./db_data:/var/lib/postgresql/data
+  #   ports:
+  #     - "5432:5432"
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U hajimi"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+
+  # 可选的监控服务（如果启用监控模块）
+  # hajimi-king-monitoring:
+  #   image: prom/prometheus:latest
+  #   container_name: hajimi-king-prometheus
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ./prometheus:/etc/prometheus
+  #     - ./prometheus_data:/prometheus
+  #   ports:
+  #     - "9090:9090"
+  #   command:
+  #     - '--config.file=/etc/prometheus/prometheus.yml'
+  #     - '--storage.tsdb.path=/prometheus'
+  #     - '--web.console.libraries=/etc/prometheus/console_libraries'
+  #     - '--web.console.templates=/etc/prometheus/consoles'
+  #     - '--storage.tsdb.retention.time=15d'
+  #     - '--web.enable-lifecycle'
+  #   healthcheck:
+  #     test: ["CMD", "wget", "--spider", "localhost:9090"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3

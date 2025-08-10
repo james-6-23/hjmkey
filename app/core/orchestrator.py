@@ -226,10 +226,14 @@ class Orchestrator:
         except asyncio.CancelledError:
             # 任务被取消（例如用户按Ctrl+C）
             logger.info(f"⛔ Query cancelled: {query}")
+            # 保存当前进度
+            self._save_checkpoint()
             raise
         except Exception as e:
             logger.error(f"❌ Error processing query '{query}': {e}")
             self.stats.total_errors += 1
+            # 添加错误恢复机制
+            self._handle_query_error(query, e)
     
     def _process_queries_sync(self, queries: List[str]) -> None:
         """
@@ -325,6 +329,8 @@ class Orchestrator:
         except Exception as e:
             logger.error(f"Error processing query '{query}': {e}")
             self.stats.total_errors += 1
+            # 添加错误恢复机制
+            self._handle_query_error(query, e)
     
     def _process_item(self, item: Dict[str, Any]) -> ScanResult:
         """
@@ -616,9 +622,141 @@ class Orchestrator:
         except Exception as e:
             logger.error(f"❌ 保存密钥汇总失败: {e}")
     
+    def _handle_query_error(self, query: str, error: Exception) -> None:
+        """
+        处理查询错误，实现错误恢复机制
+        
+        Args:
+            query: 出错的查询
+            error: 错误异常
+        """
+        try:
+            # 记录错误详情
+            error_type = type(error).__name__
+            error_msg = str(error)
+            
+            # 保存错误信息到文件
+            error_dir = Path("data/errors")
+            error_dir.mkdir(parents=True, exist_ok=True)
+            
+            error_file = error_dir / f"errors_{datetime.now().strftime('%Y%m%d')}.log"
+            with open(error_file, 'a', encoding='utf-8') as f:
+                f.write(f"{datetime.now().isoformat()} | {query} | {error_type}: {error_msg}\n")
+            
+            # 根据错误类型决定恢复策略
+            if "rate limit" in error_msg.lower() or "429" in error_msg:
+                # 限流错误：暂时跳过该查询，稍后重试
+                logger.info(f"🔄 Query '{query}' will be retried later due to rate limit")
+                # 不标记为已处理，下次循环会重试
+            elif "timeout" in error_msg.lower() or "connection" in error_msg.lower():
+                # 网络错误：也可以稍后重试
+                logger.info(f"🔄 Query '{query}' will be retried due to network error")
+            else:
+                # 其他错误：标记为已处理，避免无限重试
+                logger.warning(f"⚠️ Query '{query}' marked as processed due to persistent error")
+                normalized_query = self.scanner.normalize_query(query)
+                self.scanner.filter.add_processed_query(normalized_query)
+            
+            # 保存当前状态作为检查点
+            self._save_checkpoint()
+            
+        except Exception as recovery_error:
+            logger.error(f"❌ Error recovery failed: {recovery_error}")
+    
+    def _save_checkpoint(self) -> None:
+        """保存检查点，包含当前状态和进度"""
+        try:
+            checkpoint_dir = Path("data/checkpoints")
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            
+            checkpoint_file = checkpoint_dir / f"checkpoint_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            
+            checkpoint_data = {
+                "timestamp": datetime.now().isoformat(),
+                "stats": self.stats.to_dict(),
+                "valid_keys_found": list(self.valid_keys_found),
+                "rate_limited_keys_found": list(self.rate_limited_keys_found),
+                "paid_keys_found": list(self.paid_keys_found),
+                "processed_queries": list(self.scanner.filter.processed_queries),
+                "processed_items": list(self.scanner.filter.processed_items)
+            }
+            
+            import json
+            with open(checkpoint_file, 'w', encoding='utf-8') as f:
+                json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
+            
+            logger.debug(f"💾 Checkpoint saved to: {checkpoint_file}")
+            
+            # 清理旧的检查点文件（保留最近的5个）
+            checkpoint_files = sorted(checkpoint_dir.glob("checkpoint_*.json"))
+            if len(checkpoint_files) > 5:
+                for old_file in checkpoint_files[:-5]:
+                    old_file.unlink()
+                    logger.debug(f"🗑️ Deleted old checkpoint: {old_file.name}")
+                    
+        except Exception as e:
+            logger.error(f"❌ Failed to save checkpoint: {e}")
+    
+    def load_checkpoint(self, checkpoint_file: Optional[Path] = None) -> bool:
+        """
+        加载检查点恢复状态
+        
+        Args:
+            checkpoint_file: 检查点文件路径，如果为None则加载最新的
+            
+        Returns:
+            是否成功加载
+        """
+        try:
+            checkpoint_dir = Path("data/checkpoints")
+            
+            if checkpoint_file is None:
+                # 加载最新的检查点
+                checkpoint_files = sorted(checkpoint_dir.glob("checkpoint_*.json"))
+                if not checkpoint_files:
+                    logger.info("📭 No checkpoint files found")
+                    return False
+                checkpoint_file = checkpoint_files[-1]
+            
+            if not checkpoint_file.exists():
+                logger.error(f"❌ Checkpoint file not found: {checkpoint_file}")
+                return False
+            
+            import json
+            with open(checkpoint_file, 'r', encoding='utf-8') as f:
+                checkpoint_data = json.load(f)
+            
+            # 恢复状态
+            self.valid_keys_found = set(checkpoint_data.get("valid_keys_found", []))
+            self.rate_limited_keys_found = set(checkpoint_data.get("rate_limited_keys_found", []))
+            self.paid_keys_found = set(checkpoint_data.get("paid_keys_found", []))
+            self.scanner.filter.processed_queries = set(checkpoint_data.get("processed_queries", []))
+            self.scanner.filter.processed_items = set(checkpoint_data.get("processed_items", []))
+            
+            # 恢复统计信息
+            stats_data = checkpoint_data.get("stats", {})
+            self.stats.total_queries_processed = stats_data.get("total_queries_processed", 0)
+            self.stats.total_items_processed = stats_data.get("total_items_processed", 0)
+            self.stats.total_keys_found = stats_data.get("total_keys_found", 0)
+            self.stats.total_valid_keys = stats_data.get("total_valid_keys", 0)
+            self.stats.total_rate_limited_keys = stats_data.get("total_rate_limited_keys", 0)
+            self.stats.total_errors = stats_data.get("total_errors", 0)
+            
+            logger.info(f"✅ Checkpoint loaded from: {checkpoint_file}")
+            logger.info(f"   Recovered {len(self.valid_keys_found)} valid keys")
+            logger.info(f"   Recovered {len(self.scanner.filter.processed_queries)} processed queries")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load checkpoint: {e}")
+            return False
+    
     def stop(self) -> None:
         """停止协调器"""
         self.running = False
+        # 停止时保存检查点
+        self._save_checkpoint()
         logger.info("🛑 Orchestrator stop requested")
     
     def get_stats(self) -> Dict[str, Any]:
