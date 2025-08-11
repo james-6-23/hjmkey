@@ -653,135 +653,135 @@ class OrchestratorV3:
                     logger.error(f"❌ Failed to batch sync some keys to GPT Load")
                     self.sync_stats['failed_syncs'] += total_count
             
-            def _log_query_summary(self, query: str, start_stats: Dict, duration: float):
-                """记录查询完成后的摘要"""
-                # 计算新增的密钥
-                new_valid_free = self.stats.by_status[KeyStatus.VALID_FREE] - start_stats['valid_free']
-                new_valid_paid = self.stats.by_status[KeyStatus.VALID_PAID] - start_stats['valid_paid']
-                new_rate_limited = self.stats.by_status[KeyStatus.RATE_LIMITED] - start_stats['rate_limited']
-                new_invalid = self.stats.by_status[KeyStatus.INVALID] - start_stats['invalid']
-                
-                logger.info("=" * 60)
-                logger.info(f"📊 QUERY SUMMARY: {query[:50]}...")
-                logger.info("=" * 60)
-                logger.info(f"⏱️  Duration: {duration:.1f} seconds")
-                logger.info(f"🔑 Keys found in this query:")
-                logger.info(f"   Valid (Free): +{new_valid_free}")
-                logger.info(f"   Valid (Paid): +{new_valid_paid}")
-                logger.info(f"   Rate Limited: +{new_rate_limited}")
-                logger.info(f"   Invalid: +{new_invalid}")
-                logger.info(f"📈 Total keys so far:")
-                logger.info(f"   Valid (Free): {self.stats.by_status[KeyStatus.VALID_FREE]}")
-                logger.info(f"   Valid (Paid): {self.stats.by_status[KeyStatus.VALID_PAID]}")
-                logger.info(f"   Rate Limited: {self.stats.by_status[KeyStatus.RATE_LIMITED]}")
-                logger.info(f"   Invalid: {self.stats.by_status[KeyStatus.INVALID]}")
-                
-                # GPT Load 同步统计
-                if self.gpt_load_enabled and self.sync_stats['total_synced'] > 0:
-                    logger.info(f"🔄 GPT Load Sync: {self.sync_stats['total_synced']} keys synced")
-                    logger.info(f"   Free: {self.sync_stats['free_synced']}, Paid: {self.sync_stats['paid_synced']}, Limited: {self.sync_stats['rate_limited_synced']}")
-                
-                # Token Pool 状态 - 从GitHub客户端获取
-                if self.github_client and hasattr(self.github_client, 'token_pool'):
-                    pool_status = self.github_client.token_pool.get_pool_status()
-                    
-                    # 显示美化的状态框
-                    logger.info("╔" + "═" * 58 + "╗")
-        
-                    # 状态行
-                    status_text = (
-                        f"{pool_status['healthy']} OK, "
-                        f"{pool_status['limited']} Limited, "
-                        f"{pool_status['exhausted']} Exhausted"
-                    )
-                    status_pad = max(
-                        0,
-                        10
-                        - len(str(pool_status['healthy']))
-                        - len(str(pool_status['limited']))
-                        - len(str(pool_status['exhausted']))
-                    )
-                    logger.info(f"║ 🎯 Token Status: {status_text}{' ' * status_pad} ║")
-        
-                    # 配额行
-                    logger.info(f"║    Quota: {pool_status['total_remaining']}/{pool_status['total_limit']} ({pool_status['utilization']}) ║")
-                    
-                    logger.info("╚" + "═" * 58 + "╝")
-            
-            async def _validate_keys_concurrent(self, keys: List[str]) -> List[Any]:
-                """并发验证密钥"""
-                # 确保验证器已初始化
-                await self._ensure_validator_initialized()
-                
-                # 如果验证器支持异步批量验证，使用异步方法
-                if hasattr(self.validator, 'validate_batch_async'):
-                    return await self.validator.validate_batch_async(keys)
-                else:
-                    # 否则在线程池中运行同步验证
-                    loop = asyncio.get_event_loop()
-                    return await loop.run_in_executor(
-                        self._executor,
-                        self.validator.validate_batch,
-                        keys
-                    )
-        
-        
-        async def main():
-            """主函数示例"""
-            # 初始化协调器
-            orchestrator = OrchestratorV3()
-            
-            # 测试查询
-            queries = [
-                "AIzaSy in:file",
-                "AIzaSy in:file filename:.env",
-                "AIzaSy in:file filename:config"
-            ]
-            
-            # 运行
-            stats = await orchestrator.run(queries, max_loops=1)
-            
-            # 显示结果
-            print(f"\n✅ Run completed: {stats.run_id}")
-            print(f"   Valid keys found: {stats.by_status[KeyStatus.VALID_FREE] + stats.by_status[KeyStatus.VALID_PAID]}")
-        
-        
-        if __name__ == "__main__":
-            import asyncio
-            
-            # 设置日志
-            logging.basicConfig(
-                level=logging.INFO,
-                format='%(asctime)s | %(levelname)s | %(name)s | %(message)s'
-            )
-            
-            # 运行
-            try:
-                asyncio.run(main())
-            except KeyboardInterrupt:
-                logger.info("Program interrupted")
-                    return
             else:
                 # 传统模式 - 批量添加到队列
                 from utils.sync_utils import sync_utils
                 all_keys = []
                 for key_list in self.query_sync_buffer.values():
                     all_keys.extend(key_list)
-                sync_utils.add_keys_to_queue(all_keys)
-                logger.info(f"✅ Added {total_count} keys to GPT Load queue (traditional)")
-            
+                if all_keys:
+                    sync_utils.add_keys_to_queue(all_keys)
+                    logger.info(f"✅ Added {total_count} keys to GPT Load queue (traditional)")
+
             # 更新统计
             self.sync_stats['free_synced'] += free_count
             self.sync_stats['paid_synced'] += paid_count
             self.sync_stats['rate_limited_synced'] += rate_limited_count
             self.sync_stats['total_synced'] += total_count
-            
+
             # 清空缓冲区
             for status in self.query_sync_buffer:
                 self.query_sync_buffer[status].clear()
-                
+
         except Exception as e:
             logger.error(f"Failed to batch sync keys to GPT Load: {e}")
             self.sync_stats['failed_syncs'] += total_count
-    
-    
+
+    def _log_query_summary(self, query: str, start_stats: Dict, duration: float):
+        """记录查询完成后的摘要"""
+        # 计算新增的密钥
+        new_valid_free = self.stats.by_status[KeyStatus.VALID_FREE] - start_stats['valid_free']
+        new_valid_paid = self.stats.by_status[KeyStatus.VALID_PAID] - start_stats['valid_paid']
+        new_rate_limited = self.stats.by_status[KeyStatus.RATE_LIMITED] - start_stats['rate_limited']
+        new_invalid = self.stats.by_status[KeyStatus.INVALID] - start_stats['invalid']
+
+        logger.info("=" * 60)
+        logger.info(f"📊 QUERY SUMMARY: {query[:50]}...")
+        logger.info("=" * 60)
+        logger.info(f"⏱️  Duration: {duration:.1f} seconds")
+        logger.info(f"🔑 Keys found in this query:")
+        logger.info(f"   Valid (Free): +{new_valid_free}")
+        logger.info(f"   Valid (Paid): +{new_valid_paid}")
+        logger.info(f"   Rate Limited: +{new_rate_limited}")
+        logger.info(f"   Invalid: +{new_invalid}")
+        logger.info(f"📈 Total keys so far:")
+        logger.info(f"   Valid (Free): {self.stats.by_status[KeyStatus.VALID_FREE]}")
+        logger.info(f"   Valid (Paid): {self.stats.by_status[KeyStatus.VALID_PAID]}")
+        logger.info(f"   Rate Limited: {self.stats.by_status[KeyStatus.RATE_LIMITED]}")
+        logger.info(f"   Invalid: {self.stats.by_status[KeyStatus.INVALID]}")
+
+        # GPT Load 同步统计
+        if self.gpt_load_enabled and self.sync_stats['total_synced'] > 0:
+            logger.info(f"🔄 GPT Load Sync: {self.sync_stats['total_synced']} keys synced")
+            logger.info(
+                f"   Free: {self.sync_stats['free_synced']}, Paid: {self.sync_stats['paid_synced']}, Limited: {self.sync_stats['rate_limited_synced']}")
+
+        # Token Pool 状态 - 从GitHub客户端获取
+        if self.github_client and hasattr(self.github_client, 'token_pool'):
+            pool_status = self.github_client.token_pool.get_pool_status()
+
+            # 显示美化的状态框
+            logger.info("╔" + "═" * 58 + "╗")
+
+            # 状态行
+            status_text = (
+                f"{pool_status['healthy']} OK, "
+                f"{pool_status['limited']} Limited, "
+                f"{pool_status['exhausted']} Exhausted"
+            )
+            status_pad = max(
+                0,
+                10
+                - len(str(pool_status['healthy']))
+                - len(str(pool_status['limited']))
+                - len(str(pool_status['exhausted']))
+            )
+            logger.info(f"║ 🎯 Token Status: {status_text}{' ' * status_pad} ║")
+
+            # 配额行
+            logger.info(
+                f"║    Quota: {pool_status['total_remaining']}/{pool_status['total_limit']} ({pool_status['utilization']}) ║")
+
+            logger.info("╚" + "═" * 58 + "╝")
+
+    async def _validate_keys_concurrent(self, keys: List[str]) -> List[Any]:
+        """并发验证密钥"""
+        # 确保验证器已初始化
+        await self._ensure_validator_initialized()
+
+        # 如果验证器支持异步批量验证，使用异步方法
+        if hasattr(self.validator, 'validate_batch_async'):
+            return await self.validator.validate_batch_async(keys)
+        else:
+            # 否则在线程池中运行同步验证
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                self._executor,
+                self.validator.validate_batch,
+                keys
+            )
+
+
+async def main():
+    """主函数示例"""
+    # 初始化协调器
+    orchestrator = OrchestratorV3()
+
+    # 测试查询
+    queries = [
+        "AIzaSy in:file",
+        "AIzaSy in:file filename:.env",
+        "AIzaSy in:file filename:config"
+    ]
+
+    # 运行
+    stats = await orchestrator.run(queries, max_loops=1)
+
+    # 显示结果
+    print(f"\n✅ Run completed: {stats.run_id}")
+    print(
+        f"   Valid keys found: {stats.by_status[KeyStatus.VALID_FREE] + stats.by_status[KeyStatus.VALID_PAID]}")
+
+
+if __name__ == "__main__":
+    # 设置日志
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s | %(levelname)s | %(name)s | %(message)s'
+    )
+
+    # 运行
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Program interrupted by user")
