@@ -29,6 +29,16 @@ class GeminiValidationResult(ValidationResult):
     """扩展的验证结果，包含更多信息"""
     tier: Optional[KeyTier] = None
     error_message: Optional[str] = None
+    
+    def __post_init__(self):
+        """处理兼容性问题"""
+        # 如果传入了 is_valid 参数（来自基类），确保正确处理
+        if hasattr(self, 'is_valid') and self.is_valid is not None:
+            pass  # 已经设置了
+        else:
+            # 根据 tier 推断 is_valid
+            self.is_valid = self.tier in [KeyTier.FREE, KeyTier.PAID] if self.tier else False
+            self.is_rate_limited = False
 
 
 class GeminiValidatorAdapter:
@@ -121,36 +131,18 @@ class GeminiValidatorAdapter:
         results = []
         for validated_key in validator.validated_keys:
             # 判断验证状态
-            if validated_key.tier == KeyTier.INVALID:
-                result = GeminiValidationResult(
-                    key=validated_key.key,
-                    is_valid=False,
-                    is_rate_limited=False,
-                    tier=validated_key.tier,
-                    error_message=validated_key.error_message
-                )
-            elif validated_key.tier in [KeyTier.FREE, KeyTier.PAID]:
-                # 检查是否因为速率限制而被标记为有效
-                # 根据错误信息判断
-                is_rate_limited = (validated_key.error_message and 
-                                 "429" in str(validated_key.error_message))
-                
-                result = GeminiValidationResult(
-                    key=validated_key.key,
-                    is_valid=True,
-                    is_rate_limited=is_rate_limited,
-                    tier=validated_key.tier,
-                    error_message=validated_key.error_message
-                )
-            else:
-                # 默认情况
-                result = GeminiValidationResult(
-                    key=validated_key.key,
-                    is_valid=False,
-                    is_rate_limited=False,
-                    tier=validated_key.tier,
-                    error_message=validated_key.error_message
-                )
+            is_valid = validated_key.tier in [KeyTier.FREE, KeyTier.PAID]
+            is_rate_limited = (validated_key.error_message and
+                             ("429" in str(validated_key.error_message) or
+                              "rate" in str(validated_key.error_message).lower()))
+            
+            result = GeminiValidationResult(
+                key=validated_key.key,
+                is_valid=is_valid,
+                is_rate_limited=is_rate_limited,
+                tier=validated_key.tier,
+                error_message=validated_key.error_message
+            )
             
             results.append(result)
         
