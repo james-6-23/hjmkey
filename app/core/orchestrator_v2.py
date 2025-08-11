@@ -24,6 +24,7 @@ from app.core.graceful_shutdown import (
 )
 from app.core.scanner import Scanner, ScanResult
 from app.core.validator import KeyValidator
+from app.core.validator_async import AsyncGeminiKeyValidator, OptimizedKeyValidator
 from utils.file_utils import PathManager, AtomicFileWriter, RunArtifactManager
 from utils.security_utils import (
     mask_key, 
@@ -87,7 +88,16 @@ class OrchestratorV2:
         
         # 初始化扫描器和验证器
         self.scanner = scanner or Scanner()
-        self.validator = validator or KeyValidator()
+        # 使用异步验证器以提高性能
+        if validator:
+            self.validator = validator
+        else:
+            # 创建异步验证器，支持并发验证
+            async_validator = AsyncGeminiKeyValidator(
+                max_concurrent=20,  # 增加并发数
+                delay_range=(0.05, 0.1)  # 更短的延迟
+            )
+            self.validator = OptimizedKeyValidator(async_validator)
         
         # 初始化 GitHub 客户端和 TokenPool
         self._init_github_client()
@@ -689,8 +699,17 @@ class OrchestratorV2:
     
     async def _validate_keys_concurrent(self, keys: List[str]) -> List[Any]:
         """并发验证密钥"""
-        # 直接使用批量验证（内部已经优化）
-        return self.validator.validate_batch(keys)
+        # 如果验证器支持异步批量验证，使用异步方法
+        if hasattr(self.validator, 'validate_batch_async'):
+            return await self.validator.validate_batch_async(keys)
+        else:
+            # 否则在线程池中运行同步验证
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                self._executor,
+                self.validator.validate_batch,
+                keys
+            )
 
 
 async def main():
