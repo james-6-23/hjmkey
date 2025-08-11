@@ -1,3 +1,4 @@
+
 """
 Token Pool 智能调度模块 - 优化 GitHub API 令牌使用
 """
@@ -172,9 +173,14 @@ class TokenPool:
         """
         self.tokens = [t.strip() for t in tokens if t.strip()]
         self.strategy = strategy
-        self.metrics: Dict[str, TokenMetrics] = {
-            token: TokenMetrics(token=token) for token in self.tokens
-        }
+        # 初始化配额信息（使用更合理的默认值）
+        self.metrics: Dict[str, TokenMetrics] = {}
+        for token in self.tokens:
+            metrics = TokenMetrics(token=token)
+            # GitHub搜索API默认配额是30次/分钟
+            metrics.limit = 30
+            metrics.remaining = 30
+            self.metrics[token] = metrics
         
         # 轮询索引
         self._round_robin_index = 0
@@ -336,6 +342,17 @@ class TokenPool:
             total_remaining = sum(m.remaining for m in self.metrics.values())
             total_limit = sum(m.limit for m in self.metrics.values())
             
+            # 修复配额显示问题：确保剩余配额不超过总配额
+            if total_remaining > total_limit:
+                total_remaining = total_limit
+            
+            # 修复使用率计算：防止负数和异常值
+            if total_limit > 0:
+                utilization_pct = max(0, min(100, (total_limit - total_remaining) / total_limit * 100))
+                utilization_str = f"{utilization_pct:.1f}%"
+            else:
+                utilization_str = "0.0%"
+            
             return {
                 "total_tokens": len(self.tokens),
                 "healthy": healthy,
@@ -343,7 +360,7 @@ class TokenPool:
                 "exhausted": exhausted,
                 "total_remaining": total_remaining,
                 "total_limit": total_limit,
-                "utilization": f"{(1 - total_remaining/total_limit)*100:.1f}%",
+                "utilization": utilization_str,
                 "total_selections": self.total_selections,
                 "strategy_usage": dict(self.strategy_stats)
             }

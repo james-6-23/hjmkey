@@ -1,0 +1,51 @@
+# Gemini Validator V2 配置示例
+# 用于配置高性能验证器的参数
+
+# 验证器并发数配置
+# 根据您的网络和API限制调整
+# 建议值：
+# - 一般网络：50-100
+# - 高速网络：100-200
+# - 受限环境：20-50
+VALIDATOR_CONCURRENCY: 100
+
+# 验证器其他配置
+VALIDATOR_CONFIG:
+  # API 主机地址
+  api_host: "https://generativelanguage.googleapis.com/"
+  
+  # 请求超时时间（秒）
+  timeout_sec: 15
+  
+  # 最大重试次数
+  max_retries: 2
+  
+  # 是否启用 HTTP/2
+  enable_http2: true
+  
+  # 代理设置（可选）
+  # proxy: "http://proxy.example.com:8080"
+  
+  # 日志级别
+  log_level: "INFO"
+  
+  # 输出目录
+  output_dir: "data/keys"
+  
+  # 是否保存备份
+  save_backup: true
+
+# 验证模型配置
+VALIDATION_MODEL: "gemini-2.0-flash-exp"
+
+# 付费密钥检测模型
+PAID_KEY_MODELS:
+  - "gemini-1.5-pro"
+  - "gemini-1.5-flash"
+
+# 性能优化建议
+# 如果您的网络条件良好，可以尝试以下配置：
+# VALIDATOR_CONCURRENCY: 150
+# VALIDATOR_CONFIG:
+#   timeout_sec: 10
+#   max_retries: 1

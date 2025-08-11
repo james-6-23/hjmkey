@@ -112,8 +112,16 @@ class OrchestratorV2:
             'rate_limited_synced': 0,
             'failed_syncs': 0
         }
+        
+        # 批量同步缓冲区 - 用于收集每个查询的密钥
+        self.query_sync_buffer = {
+            KeyStatus.VALID_FREE: [],
+            KeyStatus.VALID_PAID: [],
+            KeyStatus.RATE_LIMITED: []
+        }
+        
         if self.gpt_load_enabled:
-            logger.info("✅ GPT Load sync enabled")
+            logger.info("✅ GPT Load sync enabled (optimized batch mode)")
         
         # 线程池（根据CPU核心数调整）
         import multiprocessing
@@ -292,6 +300,10 @@ class OrchestratorV2:
         if self.state_machine.state != OrchestratorState.FINALIZING:
             self.state_machine.transition_to(OrchestratorState.SCANNING)
         
+        # 批量同步本查询收集的所有密钥到 GPT Load
+        if self.gpt_load_enabled:
+            self._batch_sync_query_keys()
+        
         # 显示查询完成后的统计
         self._log_query_summary(query, start_stats, time.time() - query_start_time)
     
@@ -333,9 +345,9 @@ class OrchestratorV2:
                 # 实时保存有效密钥到文件
                 self._save_key_to_file(val_result.key, status)
                 
-                # 同步到 GPT Load
+                # 添加到批量同步缓冲区
                 if self.gpt_load_enabled:
-                    self._sync_key_to_gpt_load(val_result.key, status)
+                    self.query_sync_buffer[status].append(val_result.key)
                 
             elif val_result.is_rate_limited:
                 self.stats.mark_key(val_result.key, KeyStatus.RATE_LIMITED)
@@ -344,9 +356,9 @@ class OrchestratorV2:
                 # 实时保存限流密钥到文件
                 self._save_key_to_file(val_result.key, KeyStatus.RATE_LIMITED)
                 
-                # 同步到 GPT Load
+                # 添加到批量同步缓冲区
                 if self.gpt_load_enabled:
-                    self._sync_key_to_gpt_load(val_result.key, KeyStatus.RATE_LIMITED)
+                    self.query_sync_buffer[KeyStatus.RATE_LIMITED].append(val_result.key)
                 
             else:
                 self.stats.mark_key(val_result.key, KeyStatus.INVALID)
@@ -593,42 +605,62 @@ class OrchestratorV2:
         except Exception as e:
             logger.error(f"Failed to save key: {e}")
     
-    def _sync_key_to_gpt_load(self, key: str, status: KeyStatus):
-        """同步单个密钥到 GPT Load"""
+    def _batch_sync_query_keys(self):
+        """批量同步当前查询收集的所有密钥到 GPT Load"""
         try:
-            # 根据状态确定密钥类型
-            if status == KeyStatus.VALID_FREE:
-                key_type = KeyType.FREE
-                keys_dict = {KeyType.FREE: [key]}
-                self.sync_stats['free_synced'] += 1
-            elif status == KeyStatus.VALID_PAID:
-                key_type = KeyType.PAID
-                keys_dict = {KeyType.PAID: [key]}
-                self.sync_stats['paid_synced'] += 1
-            elif status == KeyStatus.RATE_LIMITED:
-                key_type = KeyType.RATE_LIMITED
-                keys_dict = {KeyType.RATE_LIMITED: [key]}
-                self.sync_stats['rate_limited_synced'] += 1
-            else:
-                # INVALID 类型不同步
+            # 统计本次批量同步的密钥数
+            free_count = len(self.query_sync_buffer[KeyStatus.VALID_FREE])
+            paid_count = len(self.query_sync_buffer[KeyStatus.VALID_PAID])
+            rate_limited_count = len(self.query_sync_buffer[KeyStatus.RATE_LIMITED])
+            total_count = free_count + paid_count + rate_limited_count
+            
+            if total_count == 0:
                 return
             
-            # 使用智能同步管理器同步
+            logger.info(f"🔄 Batch syncing {total_count} keys to GPT Load...")
+            logger.info(f"   Free: {free_count}, Paid: {paid_count}, Rate Limited: {rate_limited_count}")
+            
+            # 准备批量同步的密钥字典
+            keys_dict = {}
+            if self.query_sync_buffer[KeyStatus.VALID_FREE]:
+                keys_dict[KeyType.FREE] = self.query_sync_buffer[KeyStatus.VALID_FREE].copy()
+            if self.query_sync_buffer[KeyStatus.VALID_PAID]:
+                keys_dict[KeyType.PAID] = self.query_sync_buffer[KeyStatus.VALID_PAID].copy()
+            if self.query_sync_buffer[KeyStatus.RATE_LIMITED]:
+                keys_dict[KeyType.RATE_LIMITED] = self.query_sync_buffer[KeyStatus.RATE_LIMITED].copy()
+            
+            # 使用智能同步管理器批量同步
             if self.sync_manager.enabled:
                 # 智能分组模式
-                self.sync_manager.batch_sync_with_types(keys_dict)
-                logger.debug(f"🔄 Key synced to GPT Load (smart group): {mask_key(key)}")
+                success = self.sync_manager.batch_sync_with_types(keys_dict)
+                if success:
+                    logger.info(f"✅ Successfully batch synced {total_count} keys to GPT Load (smart group)")
+                else:
+                    logger.error(f"❌ Failed to batch sync some keys to GPT Load")
+                    self.sync_stats['failed_syncs'] += total_count
+                    return
             else:
-                # 传统模式 - 直接同步
+                # 传统模式 - 批量添加到队列
                 from utils.sync_utils import sync_utils
-                sync_utils.add_keys_to_queue([key])
-                logger.debug(f"🔄 Key synced to GPT Load (traditional): {mask_key(key)}")
+                all_keys = []
+                for key_list in self.query_sync_buffer.values():
+                    all_keys.extend(key_list)
+                sync_utils.add_keys_to_queue(all_keys)
+                logger.info(f"✅ Added {total_count} keys to GPT Load queue (traditional)")
             
-            self.sync_stats['total_synced'] += 1
+            # 更新统计
+            self.sync_stats['free_synced'] += free_count
+            self.sync_stats['paid_synced'] += paid_count
+            self.sync_stats['rate_limited_synced'] += rate_limited_count
+            self.sync_stats['total_synced'] += total_count
+            
+            # 清空缓冲区
+            for status in self.query_sync_buffer:
+                self.query_sync_buffer[status].clear()
                 
         except Exception as e:
-            logger.error(f"Failed to sync key to GPT Load: {e}")
-            self.sync_stats['failed_syncs'] += 1
+            logger.error(f"Failed to batch sync keys to GPT Load: {e}")
+            self.sync_stats['failed_syncs'] += total_count
     
     def _log_query_summary(self, query: str, start_stats: Dict, duration: float):
         """记录查询完成后的摘要"""
