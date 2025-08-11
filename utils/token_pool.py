@@ -171,8 +171,26 @@ class TokenPool:
             tokens: 令牌列表
             strategy: 选择策略
         """
-        self.tokens = [t.strip() for t in tokens if t.strip()]
+        # 去重令牌列表
+        unique_tokens = []
+        seen = set()
+        duplicate_count = 0
+        
+        for token in tokens:
+            token = token.strip()
+            if token and token not in seen:
+                unique_tokens.append(token)
+                seen.add(token)
+            elif token in seen:
+                duplicate_count += 1
+                logger.warning(f"⚠️ 发现重复的GitHub令牌，已自动去重")
+        
+        if duplicate_count > 0:
+            logger.info(f"📋 去重统计：移除了 {duplicate_count} 个重复令牌")
+            
+        self.tokens = unique_tokens
         self.strategy = strategy
+        
         # 初始化配额信息（使用更合理的默认值）
         self.metrics: Dict[str, TokenMetrics] = {}
         for token in self.tokens:
@@ -197,6 +215,104 @@ class TokenPool:
         
         logger.info(f"🎯 Token pool initialized with {len(self.tokens)} tokens")
         logger.info(f"   Strategy: {strategy.name}")
+        
+        # 启动时检查实际配额
+        self._initialize_token_quotas()
+    
+    def _initialize_token_quotas(self):
+        """
+        启动时检查所有令牌的实际配额
+        """
+        import requests
+        
+        logger.info("🔍 Checking actual token quotas from GitHub API...")
+        
+        for i, token in enumerate(self.tokens):
+            try:
+                # 调用 GitHub API 检查配额
+                headers = {
+                    "Authorization": f"token {token}",
+                    "Accept": "application/vnd.github.v3+json"
+                }
+                
+                response = requests.get(
+                    "https://api.github.com/rate_limit",
+                    headers=headers,
+                    timeout=5
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    # 获取搜索API的配额信息
+                    search_limit = data.get('resources', {}).get('search', {})
+                    core_limit = data.get('resources', {}).get('core', {})
+                    
+                    # 更新指标
+                    metrics = self.metrics[token]
+                    old_limit = metrics.limit
+                    old_remaining = metrics.remaining
+                    
+                    metrics.limit = search_limit.get('limit', 30)
+                    metrics.remaining = search_limit.get('remaining', 30)
+                    metrics.reset_time = search_limit.get('reset', 0)
+                    
+                    # 计算使用率
+                    used = metrics.limit - metrics.remaining
+                    usage_rate = (used / metrics.limit * 100) if metrics.limit > 0 else 0
+                    
+                    # 更新状态
+                    metrics.update_quota(metrics.remaining, metrics.reset_time)
+                    
+                    # 只在配额与默认值不同时记录
+                    if metrics.limit != old_limit or metrics.remaining != old_remaining:
+                        logger.info(
+                            f"   Token {i+1}: {metrics.remaining}/{metrics.limit} "
+                            f"({usage_rate:.1f}% used) - {metrics.status.name}"
+                        )
+                    
+                elif response.status_code == 401:
+                    # 无效令牌
+                    self.metrics[token].status = TokenStatus.FAILED
+                    logger.warning(f"   Token {i+1}: INVALID (401 Unauthorized)")
+                    
+                elif response.status_code == 403:
+                    # 可能是限流
+                    self.metrics[token].status = TokenStatus.EXHAUSTED
+                    self.metrics[token].remaining = 0
+                    logger.warning(f"   Token {i+1}: EXHAUSTED (403 Forbidden)")
+                    
+                else:
+                    logger.debug(f"   Token {i+1}: Check failed (HTTP {response.status_code})")
+                
+                # 避免过快请求
+                if i < len(self.tokens) - 1:
+                    time.sleep(0.2)
+                    
+            except requests.exceptions.RequestException as e:
+                logger.debug(f"   Token {i+1}: Network error during quota check - {type(e).__name__}")
+            except Exception as e:
+                logger.debug(f"   Token {i+1}: Unexpected error - {type(e).__name__}")
+        
+        # 统计汇总
+        healthy = sum(1 for m in self.metrics.values() if m.status == TokenStatus.HEALTHY)
+        limited = sum(1 for m in self.metrics.values() if m.status == TokenStatus.LIMITED)
+        exhausted = sum(1 for m in self.metrics.values() if m.status == TokenStatus.EXHAUSTED)
+        failed = sum(1 for m in self.metrics.values() if m.status == TokenStatus.FAILED)
+        
+        total_remaining = sum(m.remaining for m in self.metrics.values())
+        total_limit = sum(m.limit for m in self.metrics.values())
+        
+        logger.info(f"📊 Token pool quota check complete:")
+        logger.info(f"   Healthy: {healthy}, Limited: {limited}, Exhausted: {exhausted}, Failed: {failed}")
+        logger.info(f"   Total quota: {total_remaining}/{total_limit} remaining")
+    
+    def refresh_quotas(self):
+        """
+        手动刷新所有令牌的配额信息
+        """
+        logger.info("🔄 Refreshing token quotas...")
+        self._initialize_token_quotas()
     
     def select_token(self) -> Optional[str]:
         """
@@ -338,6 +454,8 @@ class TokenPool:
             healthy = sum(1 for m in self.metrics.values() if m.status == TokenStatus.HEALTHY)
             limited = sum(1 for m in self.metrics.values() if m.status == TokenStatus.LIMITED)
             exhausted = sum(1 for m in self.metrics.values() if m.status == TokenStatus.EXHAUSTED)
+            failed = sum(1 for m in self.metrics.values() if m.status == TokenStatus.FAILED)
+            recovering = sum(1 for m in self.metrics.values() if m.status == TokenStatus.RECOVERING)
             
             total_remaining = sum(m.remaining for m in self.metrics.values())
             total_limit = sum(m.limit for m in self.metrics.values())
@@ -353,14 +471,22 @@ class TokenPool:
             else:
                 utilization_str = "0.0%"
             
+            # 计算总请求数和错误数
+            total_requests = sum(m.total_requests for m in self.metrics.values())
+            total_errors = sum(m.failed_requests for m in self.metrics.values())
+            
             return {
                 "total_tokens": len(self.tokens),
                 "healthy": healthy,
                 "limited": limited,
                 "exhausted": exhausted,
+                "failed": failed,
+                "recovering": recovering,
                 "total_remaining": total_remaining,
                 "total_limit": total_limit,
                 "utilization": utilization_str,
+                "total_requests": total_requests,
+                "total_errors": total_errors,
                 "total_selections": self.total_selections,
                 "strategy_usage": dict(self.strategy_stats)
             }

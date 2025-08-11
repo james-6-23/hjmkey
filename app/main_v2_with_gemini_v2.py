@@ -19,6 +19,11 @@ import multiprocessing
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# 立即加载环境变量（修复特性管理器加载问题）
+from dotenv import load_dotenv
+# 强制重新加载环境变量，确保最新配置
+load_dotenv(override=True)
+
 # 定义北京时区
 BEIJING_TZ = timezone(timedelta(hours=8))
 
@@ -356,9 +361,16 @@ async def main():
         logger.info(f"⚡ Token池优化器已启动，{worker_count} 个工作线程")
     
     # 初始化特性管理器
-    feature_manager = get_feature_manager(config.get_all())
+    # 确保环境变量已经加载
+    feature_manager = get_feature_manager()  # 不传递config，让它从环境变量读取
     feature_manager.initialize_all_features()
-    logger.info("✅ 功能模块初始化完成")
+    
+    # 显示特性加载状态
+    loaded_features = [name for name, feature in feature_manager.features.items()]
+    if loaded_features:
+        logger.info(f"✅ 功能模块初始化完成，已加载: {', '.join(loaded_features)}")
+    else:
+        logger.warning("⚠️ 没有功能模块被加载，请检查环境变量配置")
     
     # 加载查询
     queries = load_queries(config)

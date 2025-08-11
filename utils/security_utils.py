@@ -6,13 +6,26 @@ import os
 import hashlib
 import hmac
 import json
+import re
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import logging
 import tempfile
 from functools import wraps
 
 logger = logging.getLogger(__name__)
+
+# 敏感信息模式列表
+SENSITIVE_PATTERNS: List[Tuple[str, str]] = [
+    (r'AIzaSy[A-Za-z0-9_-]{33}', 'GEMINI_KEY'),  # Gemini API keys
+    (r'github_pat_[A-Za-z0-9_]{82}', 'GITHUB_PAT'),  # GitHub PAT tokens
+    (r'ghp_[A-Za-z0-9]{36}', 'GITHUB_TOKEN'),  # GitHub tokens
+    (r'ghs_[A-Za-z0-9]{36}', 'GITHUB_SECRET'),  # GitHub secrets
+    (r'Bearer [A-Za-z0-9\-._~+/]+=*', 'BEARER_TOKEN'),  # Bearer tokens
+    (r'sk-[A-Za-z0-9]{48}', 'OPENAI_KEY'),  # OpenAI keys
+    (r'token=[A-Za-z0-9_\-]{20,}', 'API_TOKEN'),  # Generic API tokens
+    (r'api[_-]?key=[A-Za-z0-9_\-]{20,}', 'API_KEY'),  # Generic API keys
+]
 
 
 class SecurityConfig:
@@ -59,6 +72,37 @@ def mask_key(key: str, prefix_len: int = None, suffix_len: int = None) -> str:
     suffix = key[-suffix_len:] if suffix_len > 0 else ""
     
     return f"{prefix}…{suffix}"
+
+
+def mask_sensitive_data(text: str, patterns: List[Tuple[str, str]] = None) -> str:
+    """
+    自动检测并脱敏文本中的敏感信息
+    
+    Args:
+        text: 原始文本
+        patterns: 自定义敏感模式列表
+        
+    Returns:
+        脱敏后的文本
+    """
+    if not text:
+        return text
+    
+    patterns = patterns or SENSITIVE_PATTERNS
+    masked_text = text
+    
+    for pattern, label in patterns:
+        regex = re.compile(pattern, re.IGNORECASE)
+        matches = regex.findall(masked_text)
+        for match in matches:
+            # 保留前6个字符用于识别
+            if len(match) > 12:
+                masked = match[:6] + '***' + match[-4:]
+            else:
+                masked = match[:3] + '***' if len(match) > 3 else '***'
+            masked_text = masked_text.replace(match, f"[{label}:{masked}]")
+    
+    return masked_text
 
 
 def mask_dict(data: Dict[str, Any], sensitive_keys: List[str] = None) -> Dict[str, Any]:
@@ -296,20 +340,8 @@ def setup_secure_logging():
             # 检查消息中是否包含密钥模式
             msg = super().format(record)
             
-            # 简单的密钥模式检测和脱敏
-            import re
-            
-            # API 密钥模式
-            patterns = [
-                (r'(AIzaSy[A-Za-z0-9_-]{33})', 'gemini_key'),  # Gemini
-                (r'(sk-[A-Za-z0-9]{48})', 'openai_key'),  # OpenAI
-                (r'(github_pat_[A-Za-z0-9]{82})', 'github_token'),  # GitHub
-            ]
-            
-            for pattern, key_type in patterns:
-                matches = re.findall(pattern, msg)
-                for match in matches:
-                    msg = msg.replace(match, mask_key(match))
+            # 使用增强的脱敏功能
+            msg = mask_sensitive_data(msg)
             
             return msg
     
@@ -320,6 +352,35 @@ def setup_secure_logging():
         ))
     
     logger.info("🔒 Secure logging configured")
+
+
+class SecureLogFilter(logging.Filter):
+    """
+    安全日志过滤器，自动脱敏敏感信息
+    """
+    
+    def filter(self, record: logging.LogRecord) -> bool:
+        """
+        过滤日志记录，脱敏敏感信息
+        
+        Args:
+            record: 日志记录
+            
+        Returns:
+            是否允许记录
+        """
+        # 脱敏消息中的密钥
+        if hasattr(record, 'msg'):
+            record.msg = mask_sensitive_data(str(record.msg))
+        
+        # 脱敏参数中的密钥
+        if hasattr(record, 'args') and record.args:
+            record.args = tuple(
+                mask_sensitive_data(str(arg)) if isinstance(arg, str) else arg
+                for arg in record.args
+            )
+        
+        return True
 
 
 def validate_environment():
@@ -341,6 +402,38 @@ def validate_environment():
     if SecurityConfig.ALLOW_PLAINTEXT:
         warnings.append("⚠️ Plaintext storage enabled - keys will be saved unencrypted")
     
+    # 检查是否有硬编码的密钥
+    if Path("config").exists():
+        for config_file in Path("config").glob("*.json"):
+            try:
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    # 使用更严格的检测
+                    for pattern, label in SENSITIVE_PATTERNS:
+                        if re.search(pattern, content, re.IGNORECASE):
+                            warnings.append(f"⚠️ Config file {config_file} may contain hardcoded {label}")
+                            break
+            except Exception as e:
+                logger.debug(f"Could not check {config_file}: {e}")
+    
+    # 检查日志文件中的敏感信息
+    log_dir = Path("logs")
+    if log_dir.exists():
+        for log_file in log_dir.glob("*.log"):
+            try:
+                with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    # 只读前100KB避免内存问题
+                    content = f.read(1024 * 100)
+                    for pattern, label in SENSITIVE_PATTERNS:
+                        if re.search(pattern, content, re.IGNORECASE):
+                            warnings.append(f"⚠️ Log file {log_file} contains unmasked {label}")
+                            # 自动脱敏日志文件
+                            logger.info(f"🔒 Sanitizing log file {log_file}...")
+                            sanitize_log_file(log_file)
+                            break
+            except Exception as e:
+                logger.debug(f"Could not check {log_file}: {e}")
+    
     if warnings:
         for warning in warnings:
             logger.warning(warning)
@@ -348,6 +441,64 @@ def validate_environment():
         logger.info("✅ Security environment validated")
     
     return len(warnings) == 0
+
+
+def sanitize_log_file(log_path: Path, backup: bool = True):
+    """
+    脱敏日志文件中的敏感信息
+    
+    Args:
+        log_path: 日志文件路径
+        backup: 是否备份原文件
+    """
+    try:
+        # 读取文件内容
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+        
+        # 脱敏内容
+        sanitized_content = mask_sensitive_data(content)
+        
+        # 如果内容没有变化，跳过
+        if content == sanitized_content:
+            logger.debug(f"No sensitive data found in {log_path}")
+            return
+        
+        # 备份原文件
+        if backup:
+            backup_path = log_path.with_suffix('.log.bak')
+            counter = 1
+            while backup_path.exists():
+                backup_path = log_path.with_suffix(f'.log.bak{counter}')
+                counter += 1
+            log_path.rename(backup_path)
+            logger.info(f"📁 Original log backed up to {backup_path}")
+        
+        # 写入脱敏后的内容
+        with open(log_path, 'w', encoding='utf-8') as f:
+            f.write(sanitized_content)
+        
+        logger.info(f"✅ Log file sanitized: {log_path}")
+        
+    except Exception as e:
+        logger.error(f"Failed to sanitize log file {log_path}: {e}")
+
+
+def install_global_filter():
+    """
+    安装全局日志过滤器，自动脱敏所有日志
+    """
+    # 创建安全过滤器
+    secure_filter = SecureLogFilter()
+    
+    # 添加到根日志器
+    logging.root.addFilter(secure_filter)
+    
+    # 添加到所有现有的处理器
+    for handler in logging.root.handlers:
+        handler.addFilter(secure_filter)
+    
+    logger.info("🔒 Global secure log filter installed")
 
 
 # 使用示例

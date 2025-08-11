@@ -31,14 +31,76 @@ class GeminiValidationResult(ValidationResult):
     error_message: Optional[str] = None
     
     def __post_init__(self):
-        """处理兼容性问题"""
-        # 如果传入了 is_valid 参数（来自基类），确保正确处理
+        """处理兼容性问题 - 统一参数接口"""
+        # 确保所有必需的属性都存在
+        if not hasattr(self, 'key'):
+            self.key = None
+            
+        # 处理 is_valid 参数兼容性
         if hasattr(self, 'is_valid') and self.is_valid is not None:
             pass  # 已经设置了
         else:
             # 根据 tier 推断 is_valid
             self.is_valid = self.tier in [KeyTier.FREE, KeyTier.PAID] if self.tier else False
+        
+        # 确保 is_rate_limited 属性存在
+        if not hasattr(self, 'is_rate_limited'):
             self.is_rate_limited = False
+            # 从错误信息推断是否被限流
+            if self.error_message:
+                error_lower = str(self.error_message).lower()
+                self.is_rate_limited = any(keyword in error_lower for keyword in ['429', 'rate', 'limit', 'quota'])
+        
+        # 添加向后兼容的属性
+        if not hasattr(self, 'status'):
+            # 为了兼容旧代码，添加 status 属性
+            if self.is_valid:
+                self.status = 'VALID_PAID' if self.tier == KeyTier.PAID else 'VALID_FREE'
+            elif self.is_rate_limited:
+                self.status = 'RATE_LIMITED'
+            else:
+                self.status = 'INVALID'
+        
+        # 添加 message 属性（兼容旧接口）
+        if not hasattr(self, 'message'):
+            if self.error_message:
+                self.message = str(self.error_message)
+            elif self.is_valid:
+                tier_str = 'PAID' if self.tier == KeyTier.PAID else 'FREE'
+                self.message = f"Valid {tier_str} key"
+            else:
+                self.message = "Invalid key"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式（用于序列化）"""
+        return {
+            'key': self.key,
+            'is_valid': self.is_valid,
+            'is_rate_limited': self.is_rate_limited,
+            'tier': self.tier.value if self.tier else None,
+            'error_message': self.error_message,
+            'status': self.status,
+            'message': self.message
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'GeminiValidationResult':
+        """从字典创建实例（用于反序列化）"""
+        # 处理 tier 枚举
+        tier = None
+        if 'tier' in data and data['tier']:
+            try:
+                tier = KeyTier(data['tier'])
+            except:
+                tier = None
+        
+        return cls(
+            key=data.get('key'),
+            is_valid=data.get('is_valid', False),
+            is_rate_limited=data.get('is_rate_limited', False),
+            tier=tier,
+            error_message=data.get('error_message')
+        )
 
 
 class GeminiValidatorAdapter:
@@ -99,6 +161,7 @@ class GeminiValidatorAdapter:
     async def validate_batch_async(self, keys: List[str]) -> List[GeminiValidationResult]:
         """
         异步批量验证密钥
+        修复：每次都创建新的验证器实例，避免Session重用问题
         
         Args:
             keys: 密钥列表
@@ -106,11 +169,9 @@ class GeminiValidatorAdapter:
         Returns:
             验证结果列表
         """
-        if not self.validator:
-            async with GeminiKeyValidatorV2(self.config) as validator:
-                return await self._do_validation(validator, keys)
-        else:
-            return await self._do_validation(self.validator, keys)
+        # 总是创建新的验证器实例，确保Session是新的
+        async with GeminiKeyValidatorV2(self.config) as validator:
+            return await self._do_validation(validator, keys)
     
     async def _do_validation(self, validator: GeminiKeyValidatorV2, 
                            keys: List[str]) -> List[GeminiValidationResult]:
@@ -136,6 +197,7 @@ class GeminiValidatorAdapter:
                              ("429" in str(validated_key.error_message) or
                               "rate" in str(validated_key.error_message).lower()))
             
+            # 创建统一格式的验证结果
             result = GeminiValidationResult(
                 key=validated_key.key,
                 is_valid=is_valid,
@@ -177,6 +239,7 @@ class OptimizedOrchestratorValidator:
     """
     为 Orchestrator 优化的验证器包装类
     提供简单的接口和自动的上下文管理
+    修复了Session管理问题
     """
     
     def __init__(self, concurrency: int = 50):
@@ -194,13 +257,15 @@ class OptimizedOrchestratorValidator:
             log_level="INFO"
         )
         self.adapter = None
-        self._context_manager = None
+        self._session = None
+        self._connector = None
+        logger.info(f"✅ OptimizedOrchestratorValidator initialized with concurrency={concurrency}")
     
     async def _ensure_initialized(self):
-        """确保验证器已初始化"""
+        """确保验证器和Session已初始化"""
+        # 每次都创建新的adapter，避免Session重用问题
         if self.adapter is None:
             self.adapter = GeminiValidatorAdapter(self.config)
-            self._context_manager = await self.adapter.__aenter__()
     
     async def validate_batch_async(self, keys: List[str]) -> List[GeminiValidationResult]:
         """
@@ -212,8 +277,9 @@ class OptimizedOrchestratorValidator:
         Returns:
             验证结果列表
         """
-        await self._ensure_initialized()
-        return await self.adapter.validate_batch_async(keys)
+        # 每次验证都使用新的adapter实例，确保Session是新的
+        adapter = GeminiValidatorAdapter(self.config)
+        return await adapter.validate_batch_async(keys)
     
     def validate_batch(self, keys: List[str]) -> List[ValidationResult]:
         """
@@ -227,26 +293,70 @@ class OptimizedOrchestratorValidator:
         """
         # 创建临时适配器
         adapter = GeminiValidatorAdapter(self.config)
-        return adapter.validate_batch(keys)
+        results = adapter.validate_batch(keys)
+        
+        # 确保返回的是标准 ValidationResult 类型
+        # 这样可以兼容期望基类的代码
+        return [self._ensure_compatibility(r) for r in results]
+    
+    def _ensure_compatibility(self, result: GeminiValidationResult) -> ValidationResult:
+        """
+        确保结果兼容基类接口
+        
+        Args:
+            result: Gemini验证结果
+            
+        Returns:
+            兼容的验证结果
+        """
+        # 如果已经是基类，直接返回
+        if type(result) == ValidationResult:
+            return result
+        
+        # 转换为基类格式
+        base_result = ValidationResult(
+            key=result.key,
+            is_valid=result.is_valid,
+            is_rate_limited=result.is_rate_limited
+        )
+        
+        # 复制额外属性
+        if hasattr(result, 'status'):
+            base_result.status = result.status
+        if hasattr(result, 'message'):
+            base_result.message = result.message
+            
+        return base_result
     
     async def cleanup(self):
         """清理资源"""
-        if self.adapter and self._context_manager:
-            await self.adapter.__aexit__(None, None, None)
-            self.adapter = None
-            self._context_manager = None
-    
-    def __del__(self):
-        """析构函数，确保资源清理"""
+        # 清理adapter
         if self.adapter:
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(self.cleanup())
-                else:
-                    loop.run_until_complete(self.cleanup())
-            except:
-                pass
+                if hasattr(self.adapter, '__aexit__'):
+                    await self.adapter.__aexit__(None, None, None)
+            except Exception as e:
+                logger.error(f"Error cleaning up adapter: {e}")
+            finally:
+                self.adapter = None
+        
+        # 清理session
+        if self._session:
+            try:
+                await self._session.close()
+            except Exception as e:
+                logger.error(f"Error closing session: {e}")
+            finally:
+                self._session = None
+        
+        # 清理connector
+        if self._connector:
+            try:
+                await self._connector.close()
+            except Exception as e:
+                logger.error(f"Error closing connector: {e}")
+            finally:
+                self._connector = None
 
 
 # 便捷函数
