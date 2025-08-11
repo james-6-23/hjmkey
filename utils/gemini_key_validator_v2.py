@@ -398,11 +398,13 @@ class GeminiKeyValidatorV2:
             if show_progress and TQDM_AVAILABLE:
                 # 使用tqdm显示进度
                 results = []
-                async for task in tqdm.as_completed(tasks, total=len(tasks), 
-                                                   desc="验证进度"):
+                pbar = tqdm(total=len(tasks), desc="验证进度")
+                for task in asyncio.as_completed(tasks):
                     result = await task
                     results.append(result)
                     self.validated_keys.append(result)
+                    pbar.update(1)
+                pbar.close()
             else:
                 # 使用 asyncio.as_completed 实现简单进度
                 results = []
