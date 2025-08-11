@@ -124,7 +124,7 @@ class GeminiKeyValidatorV2:
         """
         return bool(self.KEY_PATTERN.match(key.strip()))
     
-    async def create_session(self) -> aiohttp.ClientSession:
+    def create_session(self) -> aiohttp.ClientSession:
         """
         创建优化的HTTP会话
         
