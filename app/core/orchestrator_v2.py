@@ -34,6 +34,7 @@ from utils.security_utils import (
 from utils.token_pool import TokenPool, TokenSelectionStrategy
 from utils.github_client_v2 import create_github_client_v2
 from app.services.config_service import get_config_service
+from utils.smart_sync_manager import smart_sync_manager, KeyType
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,19 @@ class OrchestratorV2:
         
         # 初始化 GitHub 客户端和 TokenPool
         self._init_github_client()
+        
+        # 初始化智能同步管理器和同步统计
+        self.sync_manager = smart_sync_manager
+        self.gpt_load_enabled = get_config_service().get("GPT_LOAD_SYNC_ENABLED", False)
+        self.sync_stats = {
+            'total_synced': 0,
+            'free_synced': 0,
+            'paid_synced': 0,
+            'rate_limited_synced': 0,
+            'failed_syncs': 0
+        }
+        if self.gpt_load_enabled:
+            logger.info("✅ GPT Load sync enabled")
         
         # 线程池（根据CPU核心数调整）
         import multiprocessing
@@ -309,12 +323,20 @@ class OrchestratorV2:
                 # 实时保存有效密钥到文件
                 self._save_key_to_file(val_result.key, status)
                 
+                # 同步到 GPT Load
+                if self.gpt_load_enabled:
+                    self._sync_key_to_gpt_load(val_result.key, status)
+                
             elif val_result.is_rate_limited:
                 self.stats.mark_key(val_result.key, KeyStatus.RATE_LIMITED)
                 logger.warning(f"⚠️ RATE LIMITED: {masked_key}")
                 
                 # 实时保存限流密钥到文件
                 self._save_key_to_file(val_result.key, KeyStatus.RATE_LIMITED)
+                
+                # 同步到 GPT Load
+                if self.gpt_load_enabled:
+                    self._sync_key_to_gpt_load(val_result.key, KeyStatus.RATE_LIMITED)
                 
             else:
                 self.stats.mark_key(val_result.key, KeyStatus.INVALID)
@@ -446,8 +468,39 @@ class OrchestratorV2:
         except Exception as e:
             logger.error(f"Failed to save final report: {e}")
         
+        # 批量同步所有密钥到 GPT Load（最终同步）
+        if self.gpt_load_enabled:
+            self._final_sync_to_gpt_load(keys_by_status)
+        
         # 显示最终统计
         self._log_final_stats()
+    
+    def _final_sync_to_gpt_load(self, keys_by_status: Dict):
+        """最终批量同步所有密钥到 GPT Load"""
+        try:
+            logger.info("🔄 Final sync to GPT Load...")
+            
+            # 准备各类型密钥
+            valid_free_keys = keys_by_status.get(KeyStatus.VALID_FREE.name, [])
+            valid_paid_keys = keys_by_status.get(KeyStatus.VALID_PAID.name, [])
+            rate_limited_keys = keys_by_status.get(KeyStatus.RATE_LIMITED.name, [])
+            
+            # 使用智能同步管理器
+            success = self.sync_manager.sync_to_gpt_load(
+                valid_keys=valid_free_keys,  # FREE keys as valid
+                rate_limited_keys=rate_limited_keys,
+                paid_keys=valid_paid_keys,
+                free_keys=valid_free_keys
+            )
+            
+            if success:
+                total_synced = len(valid_free_keys) + len(valid_paid_keys) + len(rate_limited_keys)
+                logger.info(f"✅ Successfully synced {total_synced} keys to GPT Load")
+            else:
+                logger.error("❌ Failed to sync some keys to GPT Load")
+                
+        except Exception as e:
+            logger.error(f"Failed in final sync to GPT Load: {e}")
     
     def _log_final_stats(self):
         """记录最终统计"""
@@ -477,7 +530,20 @@ class OrchestratorV2:
             logger.info(f"Total tokens: {pool_status['total_tokens']}")
             logger.info(f"Healthy/Limited/Exhausted: {pool_status['healthy']}/{pool_status['limited']}/{pool_status['exhausted']}")
             logger.info(f"Quota used: {used_quota}/{pool_status['total_limit']} ({utilization_pct:.1f}%)")
+            
+        # GPT Load 同步最终统计
+        if self.gpt_load_enabled:
             logger.info("=" * 60)
+            logger.info("🔄 GPT LOAD SYNC SUMMARY")
+            logger.info("=" * 60)
+            logger.info(f"Total synced: {self.sync_stats['total_synced']} keys")
+            logger.info(f"  Free keys: {self.sync_stats['free_synced']}")
+            logger.info(f"  Paid keys: {self.sync_stats['paid_synced']}")
+            logger.info(f"  Rate limited: {self.sync_stats['rate_limited_synced']}")
+            if self.sync_stats['failed_syncs'] > 0:
+                logger.warning(f"  Failed syncs: {self.sync_stats['failed_syncs']}")
+            
+        logger.info("=" * 60)
 
 
     def _save_key_to_file(self, key: str, status: KeyStatus):
@@ -517,6 +583,43 @@ class OrchestratorV2:
         except Exception as e:
             logger.error(f"Failed to save key: {e}")
     
+    def _sync_key_to_gpt_load(self, key: str, status: KeyStatus):
+        """同步单个密钥到 GPT Load"""
+        try:
+            # 根据状态确定密钥类型
+            if status == KeyStatus.VALID_FREE:
+                key_type = KeyType.FREE
+                keys_dict = {KeyType.FREE: [key]}
+                self.sync_stats['free_synced'] += 1
+            elif status == KeyStatus.VALID_PAID:
+                key_type = KeyType.PAID
+                keys_dict = {KeyType.PAID: [key]}
+                self.sync_stats['paid_synced'] += 1
+            elif status == KeyStatus.RATE_LIMITED:
+                key_type = KeyType.RATE_LIMITED
+                keys_dict = {KeyType.RATE_LIMITED: [key]}
+                self.sync_stats['rate_limited_synced'] += 1
+            else:
+                # INVALID 类型不同步
+                return
+            
+            # 使用智能同步管理器同步
+            if self.sync_manager.enabled:
+                # 智能分组模式
+                self.sync_manager.batch_sync_with_types(keys_dict)
+                logger.debug(f"🔄 Key synced to GPT Load (smart group): {mask_key(key)}")
+            else:
+                # 传统模式 - 直接同步
+                from utils.sync_utils import sync_utils
+                sync_utils.add_keys_to_queue([key])
+                logger.debug(f"🔄 Key synced to GPT Load (traditional): {mask_key(key)}")
+            
+            self.sync_stats['total_synced'] += 1
+                
+        except Exception as e:
+            logger.error(f"Failed to sync key to GPT Load: {e}")
+            self.sync_stats['failed_syncs'] += 1
+    
     def _log_query_summary(self, query: str, start_stats: Dict, duration: float):
         """记录查询完成后的摘要"""
         # 计算新增的密钥
@@ -539,6 +642,11 @@ class OrchestratorV2:
         logger.info(f"   Valid (Paid): {self.stats.by_status[KeyStatus.VALID_PAID]}")
         logger.info(f"   Rate Limited: {self.stats.by_status[KeyStatus.RATE_LIMITED]}")
         logger.info(f"   Invalid: {self.stats.by_status[KeyStatus.INVALID]}")
+        
+        # GPT Load 同步统计
+        if self.gpt_load_enabled and self.sync_stats['total_synced'] > 0:
+            logger.info(f"🔄 GPT Load Sync: {self.sync_stats['total_synced']} keys synced")
+            logger.info(f"   Free: {self.sync_stats['free_synced']}, Paid: {self.sync_stats['paid_synced']}, Limited: {self.sync_stats['rate_limited_synced']}")
         
         # Token Pool 状态 - 从GitHub客户端获取
         if self.github_client and hasattr(self.github_client, 'token_pool'):
@@ -569,6 +677,13 @@ class OrchestratorV2:
             quota_text = f"{pool_status['total_remaining']}/{pool_status['total_limit']} ({utilization_pct:.1f}% used)"
             quota_pad = max(0, 25 - len(quota_text))
             logger.info(f"║    Quota: {quota_text}{' ' * quota_pad} ║")
+            
+            # 显示每个 token 的详细状态（调试用）
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("║ Token Details:")
+                for token, metrics in self.github_client.token_pool.metrics.items():
+                    masked = mask_key(token)
+                    logger.debug(f"║   {masked}: {metrics.remaining}/{metrics.limit}")
 
             logger.info("╚" + "═" * 58 + "╝")
     
