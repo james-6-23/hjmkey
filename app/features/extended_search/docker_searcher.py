@@ -10,8 +10,15 @@ import tempfile
 import logging
 from pathlib import Path
 from typing import List, Set, Dict, Any, Optional
-import docker
 import requests
+
+# 可选依赖处理
+try:
+    import docker
+    DOCKER_AVAILABLE = True
+except ImportError:
+    DOCKER_AVAILABLE = False
+    docker = None
 from io import BytesIO
 
 logger = logging.getLogger(__name__)
@@ -50,6 +57,10 @@ class DockerSearcher:
         """初始化Docker搜索器"""
         self.docker_client = None
         self.session = requests.Session()
+        
+        if not DOCKER_AVAILABLE:
+            logger.warning("⚠️ Docker模块不可用，将仅使用Docker Hub API进行搜索")
+            return
         
         try:
             # 尝试连接Docker daemon
