@@ -71,14 +71,20 @@ GITHUB_TOKENS=ghp1,ghp2,ghp3
 ### 4. 安装依赖并运行 ⚡
 
 ```bash
-# 安装项目依赖
-uv pip install -r pyproject.toml
+# 安装项目依赖（使用 uv 同步 pyproject.toml/uv.lock）
+uv sync
 
 # 创建数据目录
 mkdir -p data
 
 # 运行程序
 python app/hajimi_king.py
+```
+
+Windows PowerShell 7+:
+```powershell
+pwsh -File .\\init.ps1
+uv run python app/hajimi_king.py
 ```
 
 ### 5. 本地运行管理 🎮
